@@ -1,11 +1,11 @@
 # Datacore Module Manifest
-# https://github.com/datafund/datacore-module-messaging
+# https://github.com/datafund/datacore-messaging
 
 name: messaging
 version: 0.1.0
 description: Inter-user messaging via shared space inboxes
 author: datafund
-repository: https://github.com/datafund/datacore-module-messaging
+repository: https://github.com/datafund/datacore-messaging
 
 # Required Datacore version
 requires:

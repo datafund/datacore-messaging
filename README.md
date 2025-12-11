@@ -15,7 +15,7 @@ Inter-user messaging for Datacore via shared space inboxes.
 
 ```bash
 cd ~/Data/.datacore/modules
-git clone https://github.com/datafund/datacore-module-messaging.git messaging
+git clone https://github.com/datafund/datacore-messaging.git messaging
 ```
 
 ## Configuration
