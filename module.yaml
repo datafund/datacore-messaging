@@ -7,12 +7,12 @@ description: Inter-user messaging via shared space inboxes
 author: datafund
 repository: https://github.com/datafund/datacore-messaging
 
-# Required Datacore version
-requires:
-  datacore: ">=0.1.0"
+# Dependencies (spec-compliant format)
+dependencies:
+  - core@>=0.1.0
 
-# Module components
-components:
+# What this module provides (spec-compliant format)
+provides:
   commands:
     - msg
     - my-messages
@@ -23,7 +23,7 @@ components:
     - message-digest
     - claude-inbox
 
-# Settings schema
+# Settings schema (extension - not in spec but useful)
 settings:
   identity:
     name:
@@ -50,7 +50,7 @@ settings:
       default: false
       description: Automatically mark messages as read after viewing
 
-# Files created by this module
+# Files created by this module (extension)
 creates:
   - path: "{space}/org/inboxes/"
     type: directory
@@ -62,7 +62,7 @@ creates:
     type: file
     description: Individual user inbox
 
-# Integration hooks
+# Integration hooks (extension)
 hooks:
   today:
     description: Add unread message count to daily briefing
