@@ -1,0 +1,447 @@
+#!/usr/bin/env python3
+"""
+datacore-msg - Terminal messenger for Datacore
+
+Pure terminal messaging - no GUI, socket-based notifications.
+
+Usage:
+    datacore-msg                    # Interactive mode
+    datacore-msg send @user "msg"   # Send message
+    datacore-msg read               # Read inbox
+    datacore-msg watch              # Watch for new messages
+    datacore-msg peers              # List online peers
+    datacore-msg daemon             # Run notification daemon
+
+Examples:
+    datacore-msg send @crt "Need OAuth keys"
+    datacore-msg send @claude "Research competitor pricing"
+"""
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+import fcntl
+from pathlib import Path
+from datetime import datetime
+
+# === CONFIG ===
+
+DATACORE_ROOT = Path(os.environ.get("DATACORE_ROOT", Path.home() / "Data"))
+SOCK_DIR = Path("/tmp")
+CLAUDE_PIPE = Path("/tmp/datacore-claude.pipe")
+
+
+def get_username() -> str:
+    """Get current user identity."""
+    if "DATACORE_USER" in os.environ:
+        return os.environ["DATACORE_USER"]
+
+    settings = DATACORE_ROOT / ".datacore/settings.local.yaml"
+    if settings.exists():
+        try:
+            import yaml
+            conf = yaml.safe_load(settings.read_text())
+            name = conf.get("identity", {}).get("name")
+            if name:
+                return name
+        except:
+            pass
+
+    return os.environ.get("USER", "unknown")
+
+
+def get_default_space() -> str:
+    """Get default messaging space."""
+    settings = DATACORE_ROOT / ".datacore/settings.local.yaml"
+    if settings.exists():
+        try:
+            import yaml
+            conf = yaml.safe_load(settings.read_text())
+            space = conf.get("messaging", {}).get("default_space")
+            if space:
+                return space
+        except:
+            pass
+
+    for p in sorted(DATACORE_ROOT.glob("[1-9]-*")):
+        if p.is_dir():
+            return p.name
+
+    return "1-team"
+
+
+def get_socket_path(user: str) -> Path:
+    """Get socket path for user."""
+    return SOCK_DIR / f"datacore-msg-{user}.sock"
+
+
+# === MESSAGE STORE ===
+
+def write_message(to: str, text: str, priority: str = "normal") -> str:
+    """Write message to recipient's inbox. Returns message ID."""
+    from_user = get_username()
+    space = get_default_space()
+
+    inbox_dir = DATACORE_ROOT / space / "org/inboxes"
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    inbox = inbox_dir / f"{to}.org"
+
+    now = datetime.now()
+    msg_id = f"msg-{now.strftime('%Y%m%d-%H%M%S')}-{from_user}"
+    timestamp = now.strftime("[%Y-%m-%d %a %H:%M]")
+
+    entry = f"""
+* MESSAGE {timestamp} :unread:
+:PROPERTIES:
+:ID: {msg_id}
+:FROM: {from_user}
+:TO: {to}
+:PRIORITY: {priority}
+:END:
+{text}
+"""
+
+    with open(inbox, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(entry)
+        fcntl.flock(f, fcntl.LOCK_UN)
+
+    return msg_id
+
+
+def read_messages(unread_only: bool = True) -> list:
+    """Read messages from current user's inbox."""
+    username = get_username()
+    messages = []
+
+    for inbox in DATACORE_ROOT.glob(f"*/org/inboxes/{username}.org"):
+        space = inbox.parts[-4]  # e.g., "1-datafund"
+        content = inbox.read_text()
+
+        for block in content.split("\n* MESSAGE ")[1:]:
+            lines = block.split("\n")
+            header = lines[0] if lines else ""
+
+            is_unread = ":unread:" in header
+            if unread_only and not is_unread:
+                continue
+
+            # Parse timestamp
+            time_str = ""
+            if "[" in header and "]" in header:
+                ts = header[header.find("[")+1:header.find("]")]
+                time_str = ts
+
+            # Parse properties
+            props = {}
+            text_lines = []
+            in_props = False
+
+            for line in lines[1:]:
+                if ":PROPERTIES:" in line:
+                    in_props = True
+                elif ":END:" in line:
+                    in_props = False
+                elif in_props and ": " in line:
+                    line = line.strip()
+                    if line.startswith(":"):
+                        kv = line[1:].split(": ", 1)
+                        if len(kv) == 2:
+                            props[kv[0].lower()] = kv[1]
+                elif not in_props and line.strip():
+                    text_lines.append(line)
+
+            messages.append({
+                "id": props.get("id", ""),
+                "from": props.get("from", "?"),
+                "to": props.get("to", ""),
+                "text": "\n".join(text_lines).strip(),
+                "time": time_str,
+                "space": space,
+                "unread": is_unread,
+                "priority": props.get("priority", "normal"),
+            })
+
+    return sorted(messages, key=lambda m: m.get("id", ""))
+
+
+# === SOCKET NOTIFICATIONS ===
+
+class NotificationDaemon:
+    """Simple daemon that listens for message notifications."""
+
+    def __init__(self, username: str):
+        self.username = username
+        self.socket_path = get_socket_path(username)
+
+    async def start(self):
+        """Start the daemon."""
+        self.socket_path.unlink(missing_ok=True)
+
+        server = await asyncio.start_unix_server(
+            self.handle_connection,
+            path=str(self.socket_path)
+        )
+
+        print(f"[daemon] @{self.username} listening on {self.socket_path}")
+
+        async with server:
+            await server.serve_forever()
+
+    async def handle_connection(self, reader, writer):
+        """Handle incoming connection."""
+        try:
+            while True:
+                data = await reader.readline()
+                if not data:
+                    break
+
+                msg = json.loads(data.decode())
+                response = await self.handle_message(msg)
+
+                if response:
+                    writer.write((json.dumps(response) + "\n").encode())
+                    await writer.drain()
+        except:
+            pass
+        finally:
+            writer.close()
+
+    async def handle_message(self, msg: dict) -> dict:
+        """Process incoming notification."""
+        msg_type = msg.get("type")
+
+        if msg_type == "ping":
+            from_user = msg.get("from")
+            print(f"\n🔔 New message from @{from_user}")
+
+            # Forward to Claude if we're the claude daemon
+            if self.username == "claude":
+                await self.forward_to_claude(msg)
+
+            return {"type": "pong"}
+
+        elif msg_type == "presence":
+            return {"type": "presence", "user": self.username, "status": "online"}
+
+        return None
+
+    async def forward_to_claude(self, msg: dict):
+        """Forward message to Claude Code session via pipe."""
+        if not CLAUDE_PIPE.exists():
+            try:
+                os.mkfifo(CLAUDE_PIPE)
+            except:
+                return
+
+        try:
+            fd = os.open(CLAUDE_PIPE, os.O_WRONLY | os.O_NONBLOCK)
+            text = f"📬 Message from @{msg.get('from')}: Check /my-messages\n"
+            os.write(fd, text.encode())
+            os.close(fd)
+        except:
+            pass
+
+    def cleanup(self):
+        """Clean up socket."""
+        self.socket_path.unlink(missing_ok=True)
+
+
+async def notify_peer(user: str, msg_id: str) -> bool:
+    """Send notification to peer if online."""
+    socket_path = get_socket_path(user)
+    if not socket_path.exists():
+        return False
+
+    try:
+        reader, writer = await asyncio.open_unix_connection(str(socket_path))
+        msg = {"type": "ping", "from": get_username(), "msg_id": msg_id}
+        writer.write((json.dumps(msg) + "\n").encode())
+        await writer.drain()
+
+        response = await asyncio.wait_for(reader.readline(), timeout=1.0)
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except:
+        return False
+
+
+def list_online_peers() -> list:
+    """List peers with active sockets."""
+    peers = []
+    for sock in SOCK_DIR.glob("datacore-msg-*.sock"):
+        user = sock.stem.replace("datacore-msg-", "")
+        peers.append(user)
+    return peers
+
+
+# === DISPLAY ===
+
+def display_messages(messages: list):
+    """Display messages in terminal."""
+    if not messages:
+        print("No messages.")
+        return
+
+    print(f"\n{'─' * 50}")
+
+    for msg in messages:
+        marker = "●" if msg["unread"] else " "
+        priority = " [!]" if msg["priority"] == "high" else ""
+        time_short = msg["time"].split(" ")[-1] if msg["time"] else ""
+
+        print(f"{marker} @{msg['from']}{priority} ({time_short})")
+        print(f"  {msg['text'][:80]}")
+        if len(msg['text']) > 80:
+            print(f"  ...")
+        print()
+
+    print(f"{'─' * 50}")
+    print(f"● = unread | {len(messages)} message(s)")
+
+
+# === INTERACTIVE MODE ===
+
+async def interactive_mode():
+    """Interactive messaging mode."""
+    username = get_username()
+    print(f"datacore-msg | @{username}")
+    print("Commands: @user msg | /read | /peers | /quit")
+    print()
+
+    while True:
+        try:
+            line = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: input("> ")
+            )
+        except (EOFError, KeyboardInterrupt):
+            break
+
+        line = line.strip()
+        if not line:
+            continue
+
+        if line.startswith("@"):
+            # Send message
+            parts = line.split(" ", 1)
+            recipient = parts[0][1:]
+            text = parts[1] if len(parts) > 1 else ""
+
+            if not text:
+                print("Usage: @user message")
+                continue
+
+            msg_id = write_message(recipient, text)
+            notified = await notify_peer(recipient, msg_id)
+            status = "✓ delivered" if notified else "✓ queued"
+            print(f"  {status}")
+
+        elif line == "/read":
+            messages = read_messages(unread_only=False)
+            display_messages(messages[-10:])
+
+        elif line == "/unread":
+            messages = read_messages(unread_only=True)
+            display_messages(messages)
+
+        elif line == "/peers":
+            peers = list_online_peers()
+            if peers:
+                print(f"Online: {', '.join('@' + p for p in peers)}")
+            else:
+                print("No peers online")
+
+        elif line in ["/quit", "/q", "/exit"]:
+            break
+
+        else:
+            print("Commands: @user msg | /read | /unread | /peers | /quit")
+
+
+# === CLI ===
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Datacore Terminal Messenger",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+
+    subparsers = parser.add_subparsers(dest="command")
+
+    # send
+    send_parser = subparsers.add_parser("send", help="Send a message")
+    send_parser.add_argument("recipient", help="@username")
+    send_parser.add_argument("message", nargs="+", help="Message text")
+    send_parser.add_argument("--priority", "-p", default="normal",
+                             choices=["low", "normal", "high"])
+
+    # read
+    read_parser = subparsers.add_parser("read", help="Read messages")
+    read_parser.add_argument("--all", "-a", action="store_true",
+                             help="Show all messages, not just unread")
+
+    # watch
+    subparsers.add_parser("watch", help="Watch for new messages")
+
+    # peers
+    subparsers.add_parser("peers", help="List online peers")
+
+    # daemon
+    subparsers.add_parser("daemon", help="Run notification daemon")
+
+    args = parser.parse_args()
+
+    if args.command == "send":
+        recipient = args.recipient.lstrip("@")
+        text = " ".join(args.message)
+        msg_id = write_message(recipient, text, args.priority)
+        notified = asyncio.run(notify_peer(recipient, msg_id))
+        status = "delivered" if notified else "queued (offline)"
+        print(f"✓ Sent to @{recipient} ({status})")
+
+    elif args.command == "read":
+        messages = read_messages(unread_only=not args.all)
+        display_messages(messages)
+
+    elif args.command == "watch":
+        print("Watching for messages... (Ctrl+C to stop)")
+        import time
+        seen = set()
+        try:
+            while True:
+                for msg in read_messages(unread_only=True):
+                    if msg["id"] not in seen:
+                        seen.add(msg["id"])
+                        priority = " [!]" if msg["priority"] == "high" else ""
+                        print(f"🔔 @{msg['from']}{priority}: {msg['text'][:50]}")
+                time.sleep(2)
+        except KeyboardInterrupt:
+            print("\nStopped.")
+
+    elif args.command == "peers":
+        peers = list_online_peers()
+        if peers:
+            print(f"Online: {', '.join('@' + p for p in peers)}")
+        else:
+            print("No peers online")
+
+    elif args.command == "daemon":
+        username = get_username()
+        daemon = NotificationDaemon(username)
+        try:
+            asyncio.run(daemon.start())
+        except KeyboardInterrupt:
+            daemon.cleanup()
+            print("\nDaemon stopped.")
+
+    else:
+        # Interactive mode (default)
+        asyncio.run(interactive_mode())
+
+
+if __name__ == "__main__":
+    main()
