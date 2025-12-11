@@ -1,0 +1,17 @@
+# User Registry for {{space}} Space
+#
+# This file tracks all users who can send/receive messages in this space.
+# Users are auto-added when they first send a message.
+#
+# Format:
+#   users:
+#     username:
+#       handles: ["@handle1", "@handle2"]
+#       added: YYYY-MM-DD
+#       type: human|ai (optional, defaults to human)
+
+users:
+  claude:
+    handles: ["@claude", "@ai"]
+    added: {{date}}
+    type: ai

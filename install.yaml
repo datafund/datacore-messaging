@@ -1,0 +1,69 @@
+# Datacore Module Manifest
+# https://github.com/datafund/datacore-module-messaging
+
+name: messaging
+version: 0.1.0
+description: Inter-user messaging via shared space inboxes
+author: datafund
+repository: https://github.com/datafund/datacore-module-messaging
+
+# Required Datacore version
+requires:
+  datacore: ">=0.1.0"
+
+# Module components
+components:
+  commands:
+    - msg
+    - my-messages
+    - reply
+    - msg-add-user
+    - broadcast
+  agents:
+    - message-digest
+    - claude-inbox
+
+# Settings schema
+settings:
+  identity:
+    name:
+      type: string
+      required: true
+      description: Your username for messaging
+    handles:
+      type: array
+      items: string
+      default: []
+      description: Aliases others can use to message you (e.g., @nickname)
+
+  messaging:
+    default_space:
+      type: string
+      required: false
+      description: Default space for sending messages
+    show_in_today:
+      type: boolean
+      default: true
+      description: Show unread message count in /today briefing
+    auto_mark_read:
+      type: boolean
+      default: false
+      description: Automatically mark messages as read after viewing
+
+# Files created by this module
+creates:
+  - path: "{space}/org/inboxes/"
+    type: directory
+    description: Inbox directory for each space
+  - path: "{space}/org/inboxes/USERS.yaml"
+    type: file
+    description: User registry for the space
+  - path: "{space}/org/inboxes/{username}.org"
+    type: file
+    description: Individual user inbox
+
+# Integration hooks
+hooks:
+  today:
+    description: Add unread message count to daily briefing
+    handler: agents/message-digest.md

@@ -1,0 +1,19 @@
+#+TITLE: Inbox - {{username}}
+#+STARTUP: overview
+#+FILETAGS: :inbox:
+
+# This is {{username}}'s message inbox for the {{space}} space.
+# Messages are appended below automatically.
+#
+# Tags:
+#   :unread:    - Not yet viewed
+#   :read:      - Viewed
+#   :replied:   - You've replied
+#   :from-ai:   - Response from Claude
+#   :broadcast: - Sent to all users
+#
+# Commands:
+#   /my-messages        - View messages
+#   /reply last "msg"   - Reply to most recent
+#   /reply [id] "msg"   - Reply to specific message
+
