@@ -62,6 +62,17 @@ In the GUI input field:
 - `@claude Research competitor pricing` - Message your Claude agent
 - `@gregor-claude Help with code review` - Message someone else's Claude (if whitelisted)
 
+### GUI Commands
+
+Type in the input field:
+
+| Command | Description |
+|---------|-------------|
+| `/my-messages` | Show all unread messages |
+| `/online` | Show online users |
+| `/clear` | Clear message display |
+| `/help` | Show available commands |
+
 ### GUI Features
 
 - Always-on-top floating window

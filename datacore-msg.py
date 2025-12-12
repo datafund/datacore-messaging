@@ -431,9 +431,171 @@ class MessageWindow(QMainWindow):
     def update_presence(self, online: list):
         self.online_label.setText(f"{len(online)} online" if online else "")
 
+    def _handle_command(self, cmd: str) -> bool:
+        """Handle /commands. Returns True if handled."""
+        cmd = cmd.lower().strip()
+
+        if cmd in ("/my-messages", "/messages", "/inbox"):
+            self._show_my_messages()
+            return True
+        elif cmd == "/clear":
+            self.messages_area.clear()
+            self.input_field.clear()
+            return True
+        elif cmd in ("/help", "/?"):
+            self._show_help()
+            return True
+        elif cmd == "/online":
+            self._show_online()
+            return True
+        return False
+
+    def _show_my_messages(self):
+        """Show all unread messages for current user."""
+        cursor = self.messages_area.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor("#c586c0"))
+        fmt.setFontWeight(700)
+        cursor.insertText("\n─── My Messages ───\n", fmt)
+
+        unread_count = 0
+        messages = []
+
+        # Check all inboxes for this user
+        for inbox in DATACORE_ROOT.glob(f"*/org/inboxes/{self.username}.org"):
+            try:
+                content = inbox.read_text()
+                for block in content.split("\n* MESSAGE ")[1:]:
+                    msg = self._parse_message(block)
+                    if msg and msg.get("unread"):
+                        messages.append(msg)
+                        unread_count += 1
+            except:
+                pass
+
+        # Also check claude inbox
+        for inbox in DATACORE_ROOT.glob(f"*/org/inboxes/{self.username}-claude.org"):
+            try:
+                content = inbox.read_text()
+                for block in content.split("\n* MESSAGE ")[1:]:
+                    msg = self._parse_message(block)
+                    if msg and msg.get("unread"):
+                        msg["to_claude"] = True
+                        messages.append(msg)
+                        unread_count += 1
+            except:
+                pass
+
+        if messages:
+            for msg in sorted(messages, key=lambda m: m.get("id", "")):
+                fmt = QTextCharFormat()
+                fmt.setForeground(QColor("#f48771"))
+                cursor.insertText("● ", fmt)
+
+                fmt = QTextCharFormat()
+                fmt.setForeground(QColor("#569cd6"))
+                fmt.setFontWeight(700)
+                cursor.insertText(f"@{msg['from']} ", fmt)
+
+                if msg.get("to_claude"):
+                    fmt = QTextCharFormat()
+                    fmt.setForeground(QColor("#c586c0"))
+                    cursor.insertText("→claude ", fmt)
+
+                fmt = QTextCharFormat()
+                fmt.setForeground(QColor("#666"))
+                cursor.insertText(f"{msg.get('time', '')}\n", fmt)
+
+                fmt = QTextCharFormat()
+                fmt.setForeground(QColor("#d4d4d4"))
+                cursor.insertText(f"  {msg['text'][:150]}\n", fmt)
+        else:
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor("#4ec9b0"))
+            cursor.insertText("  No unread messages\n", fmt)
+
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor("#666"))
+        cursor.insertText(f"─── {unread_count} unread ───\n\n", fmt)
+
+        self.messages_area.setTextCursor(cursor)
+        self.messages_area.ensureCursorVisible()
+        self.input_field.clear()
+
+    def _show_help(self):
+        """Show available commands."""
+        cursor = self.messages_area.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor("#c586c0"))
+        fmt.setFontWeight(700)
+        cursor.insertText("\n─── Commands ───\n", fmt)
+
+        commands = [
+            ("@user message", "Send message to user"),
+            ("@claude task", "Send task to your Claude"),
+            ("/my-messages", "Show unread messages"),
+            ("/online", "Show online users"),
+            ("/clear", "Clear message area"),
+            ("/help", "Show this help"),
+        ]
+
+        for cmd, desc in commands:
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor("#4ec9b0"))
+            cursor.insertText(f"  {cmd:<18}", fmt)
+
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor("#666"))
+            cursor.insertText(f" {desc}\n", fmt)
+
+        cursor.insertText("\n")
+        self.messages_area.setTextCursor(cursor)
+        self.messages_area.ensureCursorVisible()
+        self.input_field.clear()
+
+    def _show_online(self):
+        """Show online users."""
+        cursor = self.messages_area.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor("#c586c0"))
+        fmt.setFontWeight(700)
+        cursor.insertText("\n─── Online Users ───\n", fmt)
+
+        # Request presence from relay
+        if self.relay_connected:
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor("#4ec9b0"))
+            cursor.insertText(f"  (checking relay...)\n", fmt)
+        else:
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor("#f48771"))
+            cursor.insertText("  Not connected to relay\n", fmt)
+
+        cursor.insertText("\n")
+        self.messages_area.setTextCursor(cursor)
+        self.messages_area.ensureCursorVisible()
+        self.input_field.clear()
+
     def _send_message(self):
         text = self.input_field.text().strip()
-        if not text or not text.startswith("@"):
+        if not text:
+            return
+
+        # Handle /commands
+        if text.startswith("/"):
+            if self._handle_command(text):
+                return
+            # Unknown command, show help
+            self._show_help()
+            return
+
+        if not text.startswith("@"):
             return
 
         parts = text.split(" ", 1)
