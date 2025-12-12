@@ -29,10 +29,11 @@ from typing import Optional
 # PyQt6 for GUI
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTextEdit, QLineEdit, QLabel, QFrame
+    QTextEdit, QLineEdit, QLabel, QFrame, QScrollArea, QCheckBox,
+    QPushButton, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
-from PyQt6.QtGui import QColor, QTextCursor, QTextCharFormat
+from PyQt6.QtGui import QColor, QTextCursor, QTextCharFormat, QFont
 
 # Optional imports
 try:
@@ -291,6 +292,130 @@ class EmbeddedRelay:
 
 # === GUI ===
 
+class MessageWidget(QFrame):
+    """A clickable message widget with checkbox for TODO tracking."""
+
+    def __init__(self, msg_data: dict, on_status_change=None, parent=None):
+        super().__init__(parent)
+        self.msg_data = msg_data
+        self.on_status_change = on_status_change
+
+        self.setStyleSheet("""
+            MessageWidget {
+                background-color: #252526;
+                border-radius: 4px;
+                margin: 2px;
+                padding: 4px;
+            }
+            MessageWidget:hover {
+                background-color: #2d2d2d;
+            }
+        """)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(8)
+
+        # Checkbox for TODO/done
+        self.checkbox = QCheckBox()
+        self.checkbox.setStyleSheet("""
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+            }
+            QCheckBox::indicator:unchecked {
+                border: 2px solid #666;
+                border-radius: 3px;
+                background: transparent;
+            }
+            QCheckBox::indicator:checked {
+                border: 2px solid #4ec9b0;
+                border-radius: 3px;
+                background: #4ec9b0;
+            }
+        """)
+
+        # Set checkbox state based on message status
+        if msg_data.get("done"):
+            self.checkbox.setChecked(True)
+        elif msg_data.get("todo"):
+            self.checkbox.setChecked(False)
+        else:
+            # Unread or read - hide checkbox until clicked
+            pass
+
+        self.checkbox.stateChanged.connect(self._on_checkbox_changed)
+        layout.addWidget(self.checkbox)
+
+        # Message content
+        content_layout = QVBoxLayout()
+        content_layout.setSpacing(2)
+
+        # Header: sender + time
+        header = QHBoxLayout()
+        sender = msg_data.get("from", "?")
+        sender_label = QLabel(f"@{sender}")
+        sender_color = "#c586c0" if sender.endswith("-claude") else "#569cd6"
+        sender_label.setStyleSheet(f"color: {sender_color}; font-weight: bold; font-size: 12px;")
+        header.addWidget(sender_label)
+
+        if msg_data.get("to_claude"):
+            claude_label = QLabel("→claude")
+            claude_label.setStyleSheet("color: #c586c0; font-size: 11px;")
+            header.addWidget(claude_label)
+
+        header.addStretch()
+
+        time_label = QLabel(msg_data.get("time", ""))
+        time_label.setStyleSheet("color: #666; font-size: 11px;")
+        header.addWidget(time_label)
+
+        # Status indicator
+        if msg_data.get("unread"):
+            status = QLabel("●")
+            status.setStyleSheet("color: #f48771; font-size: 10px;")
+            header.addWidget(status)
+        elif msg_data.get("todo"):
+            status = QLabel("☐")
+            status.setStyleSheet("color: #dcdcaa; font-size: 12px;")
+            header.addWidget(status)
+        elif msg_data.get("done"):
+            status = QLabel("✓")
+            status.setStyleSheet("color: #4ec9b0; font-size: 12px;")
+            header.addWidget(status)
+
+        content_layout.addLayout(header)
+
+        # Message text
+        text = msg_data.get("text", "")[:200]
+        text_label = QLabel(text)
+        text_label.setWordWrap(True)
+        text_label.setStyleSheet("color: #d4d4d4; font-size: 12px;")
+        content_layout.addWidget(text_label)
+
+        layout.addLayout(content_layout, stretch=1)
+
+    def _on_checkbox_changed(self, state):
+        if self.on_status_change:
+            if state == 2:  # Checked
+                self.on_status_change(self.msg_data, "done")
+            else:
+                self.on_status_change(self.msg_data, "todo")
+
+    def mousePressEvent(self, event):
+        """Click on message to cycle: unread → todo → done."""
+        if self.on_status_change:
+            if self.msg_data.get("unread"):
+                self.on_status_change(self.msg_data, "todo")
+            elif self.msg_data.get("todo"):
+                self.on_status_change(self.msg_data, "done")
+            elif self.msg_data.get("done"):
+                self.on_status_change(self.msg_data, "clear")
+            else:
+                self.on_status_change(self.msg_data, "todo")
+        super().mousePressEvent(event)
+
+
 class SignalBridge(QObject):
     message_received = pyqtSignal(str, str, str, bool, str, bool)
     status_changed = pyqtSignal(str)
@@ -359,10 +484,30 @@ class MessageWindow(QMainWindow):
 
         layout.addLayout(header)
 
-        # Messages
+        # Messages scroll area
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet("""
+            QScrollArea { background-color: #1e1e1e; border: none; }
+            QScrollBar:vertical { background: #1e1e1e; width: 8px; }
+            QScrollBar::handle:vertical { background: #555; border-radius: 4px; }
+        """)
+
+        self.messages_container = QWidget()
+        self.messages_layout = QVBoxLayout(self.messages_container)
+        self.messages_layout.setContentsMargins(0, 0, 0, 0)
+        self.messages_layout.setSpacing(4)
+        self.messages_layout.addStretch()  # Push messages to top
+
+        self.scroll_area.setWidget(self.messages_container)
+        layout.addWidget(self.scroll_area, stretch=1)
+
+        # Text area for command output (hidden by default)
         self.messages_area = QTextEdit()
         self.messages_area.setReadOnly(True)
-        layout.addWidget(self.messages_area, stretch=1)
+        self.messages_area.setMaximumHeight(100)
+        self.messages_area.hide()
+        layout.addWidget(self.messages_area)
 
         # Separator
         sep = QFrame()
@@ -462,17 +607,59 @@ class MessageWindow(QMainWindow):
             return True
         return False
 
+    def _clear_messages_display(self):
+        """Clear all message widgets from scroll area."""
+        while self.messages_layout.count() > 1:  # Keep the stretch
+            item = self.messages_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def _add_message_widget(self, msg_data: dict):
+        """Add a clickable message widget."""
+        widget = MessageWidget(msg_data, on_status_change=self._handle_message_status_change)
+        # Insert before the stretch (which is at the end)
+        self.messages_layout.insertWidget(self.messages_layout.count() - 1, widget)
+
+    def _handle_message_status_change(self, msg_data: dict, new_status: str):
+        """Handle when user clicks on message or checkbox."""
+        msg_id = msg_data.get("id", "")
+        if msg_id:
+            self._update_message_status(msg_id, new_status)
+            # Refresh the display
+            self._show_my_messages()
+
+    def _update_message_status(self, msg_id: str, action: str):
+        """Update message status in org file."""
+        import re
+        for inbox in DATACORE_ROOT.glob(f"*/org/inboxes/{self.username}*.org"):
+            try:
+                content = inbox.read_text()
+                if msg_id in content:
+                    pattern = rf'(\* MESSAGE \[[^\]]+\])([^\n]*)(.*?:ID: {re.escape(msg_id)})'
+
+                    def replace_tags(match):
+                        header = match.group(1)
+                        tags = match.group(2)
+                        rest = match.group(3)
+                        tags = re.sub(r':(?:unread|todo|done):', '', tags).strip()
+                        if action == "todo":
+                            return f"{header} :todo:{rest}"
+                        elif action == "done":
+                            return f"{header} :done:{rest}"
+                        else:
+                            return f"{header}{rest}"
+
+                    new_content, count = re.subn(pattern, replace_tags, content, flags=re.DOTALL)
+                    if count > 0:
+                        inbox.write_text(new_content)
+                        return True
+            except:
+                pass
+        return False
+
     def _show_my_messages(self):
-        """Show all unread messages for current user."""
-        cursor = self.messages_area.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor("#c586c0"))
-        fmt.setFontWeight(700)
-        cursor.insertText("\n─── My Messages ───\n", fmt)
-
-        unread_count = 0
+        """Show all unread messages for current user as clickable widgets."""
+        self._clear_messages_display()
         messages = []
 
         # Check all inboxes for this user
@@ -482,8 +669,8 @@ class MessageWindow(QMainWindow):
                 for block in content.split("\n* MESSAGE ")[1:]:
                     msg = self._parse_message(block)
                     if msg and msg.get("unread"):
+                        msg["inbox"] = str(inbox)
                         messages.append(msg)
-                        unread_count += 1
             except:
                 pass
 
@@ -494,61 +681,27 @@ class MessageWindow(QMainWindow):
                 for block in content.split("\n* MESSAGE ")[1:]:
                     msg = self._parse_message(block)
                     if msg and msg.get("unread"):
+                        msg["inbox"] = str(inbox)
                         msg["to_claude"] = True
                         messages.append(msg)
-                        unread_count += 1
             except:
                 pass
 
+        # Add header
+        header = QLabel(f"─── {len(messages)} unread ───")
+        header.setStyleSheet("color: #c586c0; font-weight: bold; padding: 4px;")
+        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.messages_layout.insertWidget(0, header)
+
         if messages:
             for msg in sorted(messages, key=lambda m: m.get("id", "")):
-                # Get short ID (number part, e.g., "151230" from "msg-20251212-151230-tex")
-                msg_id = msg.get("id", "")
-                id_parts = msg_id.split("-")
-                short_id = id_parts[2] if len(id_parts) >= 3 else msg_id[-6:]
-
-                fmt = QTextCharFormat()
-                fmt.setForeground(QColor("#f48771"))
-                cursor.insertText("● ", fmt)
-
-                # Show short ID in brackets
-                fmt = QTextCharFormat()
-                fmt.setForeground(QColor("#666"))
-                cursor.insertText(f"[{short_id}] ", fmt)
-
-                fmt = QTextCharFormat()
-                fmt.setForeground(QColor("#569cd6"))
-                fmt.setFontWeight(700)
-                cursor.insertText(f"@{msg['from']} ", fmt)
-
-                if msg.get("to_claude"):
-                    fmt = QTextCharFormat()
-                    fmt.setForeground(QColor("#c586c0"))
-                    cursor.insertText("→claude ", fmt)
-
-                fmt = QTextCharFormat()
-                fmt.setForeground(QColor("#666"))
-                cursor.insertText(f"{msg.get('time', '')}\n", fmt)
-
-                fmt = QTextCharFormat()
-                fmt.setForeground(QColor("#d4d4d4"))
-                cursor.insertText(f"  {msg['text'][:150]}\n", fmt)
-
-                # Show command hint
-                fmt = QTextCharFormat()
-                fmt.setForeground(QColor("#555"))
-                cursor.insertText(f"  /todo {short_id}\n", fmt)
+                self._add_message_widget(msg)
         else:
-            fmt = QTextCharFormat()
-            fmt.setForeground(QColor("#4ec9b0"))
-            cursor.insertText("  No unread messages\n", fmt)
+            empty = QLabel("No unread messages")
+            empty.setStyleSheet("color: #4ec9b0; padding: 20px;")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.messages_layout.insertWidget(1, empty)
 
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor("#666"))
-        cursor.insertText(f"─── {unread_count} unread ───\n\n", fmt)
-
-        self.messages_area.setTextCursor(cursor)
-        self.messages_area.ensureCursorVisible()
         self.input_field.clear()
 
     def _show_help(self):
@@ -566,12 +719,16 @@ class MessageWindow(QMainWindow):
             ("@claude task", "Send task to your Claude"),
             ("/mine", "Show my unread messages"),
             ("/todos", "Show my TODO messages"),
-            ("/todo <id>", "Mark message as TODO"),
-            ("/done <id>", "Mark message as done"),
             ("/online", "Show online users"),
-            ("/clear", "Clear message area"),
+            ("/clear", "Clear display"),
             ("/help", "Show this help"),
         ]
+
+        # Also show click instructions
+        cursor.insertText("\n", fmt)
+        fmt.setForeground(QColor("#666"))
+        cursor.insertText("Click message to cycle: unread → todo → done\n", fmt)
+        cursor.insertText("Use checkbox to mark done\n", fmt)
 
         for cmd, desc in commands:
             fmt = QTextCharFormat()
@@ -613,17 +770,10 @@ class MessageWindow(QMainWindow):
         self.input_field.clear()
 
     def _show_todo_messages(self):
-        """Show messages marked as :todo:"""
-        cursor = self.messages_area.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor("#dcdcaa"))
-        fmt.setFontWeight(700)
-        cursor.insertText("\n─── TODO Messages ───\n", fmt)
-
+        """Show messages marked as :todo: as clickable widgets."""
+        self._clear_messages_display()
         todo_msgs = []
-        done_msgs = []
+        done_count = 0
 
         # Check all inboxes for this user
         for inbox in DATACORE_ROOT.glob(f"*/org/inboxes/{self.username}.org"):
@@ -636,7 +786,7 @@ class MessageWindow(QMainWindow):
                         if msg.get("todo"):
                             todo_msgs.append(msg)
                         elif msg.get("done"):
-                            done_msgs.append(msg)
+                            done_count += 1
             except:
                 pass
 
@@ -652,64 +802,29 @@ class MessageWindow(QMainWindow):
                         if msg.get("todo"):
                             todo_msgs.append(msg)
                         elif msg.get("done"):
-                            done_msgs.append(msg)
+                            done_count += 1
             except:
                 pass
 
+        # Add header
+        header_text = f"─── {len(todo_msgs)} todo"
+        if done_count:
+            header_text += f" ({done_count} done)"
+        header_text += " ───"
+        header = QLabel(header_text)
+        header.setStyleSheet("color: #dcdcaa; font-weight: bold; padding: 4px;")
+        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.messages_layout.insertWidget(0, header)
+
         if todo_msgs:
             for msg in sorted(todo_msgs, key=lambda m: m.get("id", "")):
-                # Get short ID (number part)
-                msg_id = msg.get("id", "")
-                id_parts = msg_id.split("-")
-                short_id = id_parts[2] if len(id_parts) >= 3 else msg_id[-6:]
-
-                fmt = QTextCharFormat()
-                fmt.setForeground(QColor("#dcdcaa"))
-                cursor.insertText("☐ ", fmt)
-
-                # Show short ID in brackets
-                fmt = QTextCharFormat()
-                fmt.setForeground(QColor("#666"))
-                cursor.insertText(f"[{short_id}] ", fmt)
-
-                fmt = QTextCharFormat()
-                fmt.setForeground(QColor("#569cd6"))
-                fmt.setFontWeight(700)
-                cursor.insertText(f"@{msg['from']} ", fmt)
-
-                if msg.get("to_claude"):
-                    fmt = QTextCharFormat()
-                    fmt.setForeground(QColor("#c586c0"))
-                    cursor.insertText("→claude ", fmt)
-
-                fmt = QTextCharFormat()
-                fmt.setForeground(QColor("#666"))
-                cursor.insertText(f"{msg.get('time', '')}\n", fmt)
-
-                fmt = QTextCharFormat()
-                fmt.setForeground(QColor("#d4d4d4"))
-                cursor.insertText(f"  {msg['text'][:120]}\n", fmt)
-
-                # Show command hint
-                fmt = QTextCharFormat()
-                fmt.setForeground(QColor("#555"))
-                cursor.insertText(f"  /done {short_id}\n", fmt)
+                self._add_message_widget(msg)
         else:
-            fmt = QTextCharFormat()
-            fmt.setForeground(QColor("#4ec9b0"))
-            cursor.insertText("  No TODO messages\n", fmt)
+            empty = QLabel("No TODO messages")
+            empty.setStyleSheet("color: #4ec9b0; padding: 20px;")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.messages_layout.insertWidget(1, empty)
 
-        if done_msgs:
-            fmt = QTextCharFormat()
-            fmt.setForeground(QColor("#666"))
-            cursor.insertText(f"\n  ({len(done_msgs)} done)\n", fmt)
-
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor("#666"))
-        cursor.insertText(f"─── {len(todo_msgs)} todo ───\n\n", fmt)
-
-        self.messages_area.setTextCursor(cursor)
-        self.messages_area.ensureCursorVisible()
         self.input_field.clear()
 
     def _mark_message(self, msg_id_part: str, action: str):
