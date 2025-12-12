@@ -56,7 +56,7 @@ echo "   2) LAN host - ws://<your-ip>:8080/ws (you host for team)"
 echo "   3) Custom ws:// URL (internal server)"
 echo ""
 echo "   wss:// options (with SSL - for public internet):"
-echo "   4) Datafund relay - wss://chat.datafund.io/ws"
+echo "   4) Datafund relay - wss://chat.datafund.ai/ws"
 echo "   5) Custom wss:// URL (your own SSL relay)"
 echo ""
 read -p "   Choice [4]: " RELAY_CHOICE
@@ -89,7 +89,7 @@ case "$RELAY_CHOICE" in
         ;;
     *)
         # Default: Datafund relay (wss://)
-        RELAY_URL="wss://chat.datafund.io/ws"
+        RELAY_URL="wss://chat.datafund.ai/ws"
         RELAY_HOST="false"
         echo "   → Using Datafund public relay (wss://)"
         ;;

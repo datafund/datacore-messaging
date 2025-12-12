@@ -8,7 +8,7 @@ Real-time team messaging with Claude Code integration.
 - **Claude Code integration**: Message `@claude` to delegate AI tasks to your personal Claude
 - **Namespaced agents**: `@tex-claude`, `@gregor-claude` - each user has their own Claude
 - **Whitelist control**: Choose who can message your Claude (others get auto-reply)
-- **WebSocket relay**: Real-time delivery via `chat.datafund.io`
+- **WebSocket relay**: Real-time delivery via `chat.datafund.ai`
 - **Local storage**: Messages saved as org-mode entries for offline access
 
 ## Installation
@@ -42,7 +42,7 @@ messaging:
 
   relay:
     secret: "your-team-secret"     # Same for all team members
-    url: "wss://chat.datafund.io/ws"
+    url: "wss://chat.datafund.ai/ws"
 ```
 
 ## Usage
@@ -197,7 +197,7 @@ Can you review PR #24?
 
 The relay enables real-time messaging between team members.
 
-**Default relay**: `wss://chat.datafund.io/ws`
+**Default relay**: `wss://chat.datafund.ai/ws`
 
 ### Deploy Your Own
 
