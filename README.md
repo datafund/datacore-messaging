@@ -62,6 +62,9 @@ In the GUI input field:
 - `@claude Research competitor pricing` - Message your Claude agent
 - `@gregor-claude Help with code review` - Message someone else's Claude (if whitelisted)
 - `@gregor >msg-id Follow-up here` - Reply to a message (creates thread)
+- `@claude [github:42] Fix this bug` - Route response to GitHub issue
+- `@claude [file:research/report.md] Analyze this` - Route to file
+- `@claude [@gregor] Help with code` - CC response to another user
 
 ### GUI Commands
 
@@ -173,6 +176,11 @@ python3 hooks/send-reply.py --complete msg-20251212-143000-gregor gregor "Task c
 - High priority tasks jump the queue
 - If Claude is already working on a task, new tasks stay queued
 - Complete current task before next one is loaded
+
+**Response Routing:**
+- `github:123` - Post to GitHub issue #123 (requires `gh` CLI)
+- `file:path/to.md` - Append to file (relative to space)
+- `@user` - CC to another user
 
 The reply is:
 1. Saved to the recipient's inbox (`gregor.org`)

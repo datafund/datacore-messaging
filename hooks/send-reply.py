@@ -6,11 +6,19 @@ Usage:
     ./send-reply.py <to_user> <message>
     ./send-reply.py --reply-to <msg-id> <to_user> <message>
     ./send-reply.py --complete <msg-id> <to_user> <message>
+    ./send-reply.py --route <dest> <to_user> <message>
+
+Routing destinations:
+    --route github:123          Post to GitHub issue #123
+    --route file:path/to.md     Append to file
+    --route @user               CC to another user
 
 Example:
     ./send-reply.py tex "I've completed the task you requested!"
     ./send-reply.py --reply-to msg-20251212-143000-tex tex "Here's the follow-up"
     ./send-reply.py --complete msg-20251212-143000-gregor gregor "Task complete! See results."
+    ./send-reply.py --route github:42 gregor "Fixed in PR #50"
+    ./send-reply.py --route file:research/analysis.md gregor "Research complete"
 """
 
 import os
@@ -190,6 +198,62 @@ def write_to_inbox(to_user, text, reply_to=None):
     return msg_id, thread_id
 
 
+def route_to_github(issue_num, text, username):
+    """Post comment to GitHub issue."""
+    import subprocess
+
+    try:
+        # Use gh CLI to post comment
+        result = subprocess.run(
+            ["gh", "issue", "comment", str(issue_num), "--body", text],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            print(f"✓ Posted to GitHub issue #{issue_num}")
+            return True
+        else:
+            print(f"⚠ GitHub error: {result.stderr}")
+            return False
+    except FileNotFoundError:
+        print("⚠ GitHub CLI (gh) not found. Install with: brew install gh")
+        return False
+    except Exception as e:
+        print(f"⚠ GitHub routing failed: {e}")
+        return False
+
+
+def route_to_file(filepath, text, username):
+    """Append message to file."""
+    try:
+        # Resolve path relative to DATACORE_ROOT
+        if not filepath.startswith("/"):
+            full_path = DATACORE_ROOT / get_default_space() / filepath
+        else:
+            full_path = Path(filepath)
+
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        entry = f"\n\n## {username} ({now})\n\n{text}\n"
+
+        with open(full_path, "a") as f:
+            f.write(entry)
+
+        print(f"✓ Appended to {full_path}")
+        return True
+    except Exception as e:
+        print(f"⚠ File routing failed: {e}")
+        return False
+
+
+def route_to_user(cc_user, text, reply_to=None):
+    """CC message to another user."""
+    msg_id, thread_id = write_to_inbox(cc_user, text, reply_to=reply_to)
+    print(f"✓ CC'd to @{cc_user} (id: {msg_id})")
+    return msg_id, thread_id
+
+
 async def send_via_relay(to_user, text, msg_id, thread_id=None, reply_to=None):
     """Send via WebSocket relay."""
     conf = get_settings()
@@ -239,6 +303,7 @@ def main():
     args = sys.argv[1:]
     reply_to = None
     complete_id = None
+    route_dest = None
 
     # Parse --reply-to flag
     if "--reply-to" in args:
@@ -257,12 +322,24 @@ def main():
                 reply_to = complete_id
             args = args[:idx] + args[idx + 2:]
 
+    # Parse --route flag
+    if "--route" in args:
+        idx = args.index("--route")
+        if idx + 1 < len(args):
+            route_dest = args[idx + 1]
+            args = args[:idx] + args[idx + 2:]
+
     if len(args) < 2:
-        print("Usage: send-reply.py [--reply-to <msg-id>] [--complete <msg-id>] <to_user> <message>", file=sys.stderr)
+        print("Usage: send-reply.py [--reply-to <msg-id>] [--complete <msg-id>] [--route <dest>] <to_user> <message>", file=sys.stderr)
+        print("\nRouting destinations:")
+        print("  github:123    Post to GitHub issue #123")
+        print("  file:path.md  Append to file")
+        print("  @user         CC to another user")
         sys.exit(1)
 
     to_user = args[0]
     text = " ".join(args[1:])
+    username = get_username()
 
     # Mark original task as done if --complete specified
     if complete_id:
@@ -271,7 +348,19 @@ def main():
         else:
             print(f"⚠ Could not find task {complete_id} to mark done")
 
-    # Write to local inbox
+    # Handle routing
+    if route_dest:
+        if route_dest.startswith("github:"):
+            issue_num = route_dest.split(":")[1]
+            route_to_github(issue_num, text, username)
+        elif route_dest.startswith("file:"):
+            filepath = route_dest.split(":", 1)[1]
+            route_to_file(filepath, text, username)
+        elif route_dest.startswith("@"):
+            cc_user = route_dest[1:]
+            route_to_user(cc_user, text, reply_to=reply_to)
+
+    # Write to local inbox (primary recipient)
     msg_id, thread_id = write_to_inbox(to_user, text, reply_to=reply_to)
     print(f"Message saved to inbox (id: {msg_id})")
     if thread_id:

@@ -1175,7 +1175,14 @@ class MessageWindow(QMainWindow):
                     # Start new thread from parent message
                     thread_id = f"thread-{reply_to}"
 
-        msg_id = self._write_to_inbox(recipient, msg_text, reply_to=reply_to, thread_id=thread_id)
+        # Check for routing syntax: @user [route] text
+        route_dest = None
+        if msg_text.startswith("[") and "]" in msg_text:
+            bracket_end = msg_text.find("]")
+            route_dest = msg_text[1:bracket_end]
+            msg_text = msg_text[bracket_end + 1:].strip()
+
+        msg_id = self._write_to_inbox(recipient, msg_text, reply_to=reply_to, thread_id=thread_id, route=route_dest)
 
         if msg_id:
             # Send via relay
@@ -1215,7 +1222,7 @@ class MessageWindow(QMainWindow):
         except:
             pass
 
-    def _write_to_inbox(self, to: str, text: str, reply_to: str = None, thread_id: str = None) -> str:
+    def _write_to_inbox(self, to: str, text: str, reply_to: str = None, thread_id: str = None, route: str = None) -> str:
         try:
             inbox_dir = DATACORE_ROOT / self.default_space / "org/inboxes"
             inbox_dir.mkdir(parents=True, exist_ok=True)
@@ -1235,6 +1242,8 @@ class MessageWindow(QMainWindow):
                 props.append(f":THREAD: {thread_id}")
             if reply_to:
                 props.append(f":REPLY_TO: {reply_to}")
+            if route:
+                props.append(f":ROUTE_TO: {route}")
 
             props_str = "\n".join(props)
             entry = f"""
