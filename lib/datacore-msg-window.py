@@ -37,7 +37,6 @@ except ImportError:
 
 DATACORE_ROOT = Path(os.environ.get("DATACORE_ROOT", Path.home() / "Data"))
 POLL_INTERVAL = 2  # seconds
-TOKEN_FILE = DATACORE_ROOT / ".datacore/state/relay-token"
 DEFAULT_RELAY = "wss://datacore-relay.fly.dev"
 
 
@@ -86,25 +85,26 @@ def get_relay_url() -> str:
     return conf.get("messaging", {}).get("relay", {}).get("url", DEFAULT_RELAY)
 
 
+def get_relay_secret() -> str | None:
+    """Get relay shared secret from settings."""
+    conf = get_settings()
+    return conf.get("messaging", {}).get("relay", {}).get("secret")
+
+
 def is_relay_enabled() -> bool:
     """Check if relay is enabled in settings."""
     conf = get_settings()
-    return conf.get("messaging", {}).get("relay", {}).get("enabled", False)
-
-
-def get_relay_token() -> str | None:
-    """Get stored relay token."""
-    if TOKEN_FILE.exists():
-        return TOKEN_FILE.read_text().strip()
-    return None
+    relay_conf = conf.get("messaging", {}).get("relay", {})
+    return relay_conf.get("enabled", False) or bool(relay_conf.get("secret"))
 
 
 class RelayClient:
     """WebSocket client for relay server."""
 
-    def __init__(self, url: str, token: str, on_message=None, on_presence=None, on_status=None):
+    def __init__(self, url: str, secret: str, username: str, on_message=None, on_presence=None, on_status=None):
         self.url = url
-        self.token = token
+        self.secret = secret
+        self.local_username = username
         self.ws = None
         self.username = None
         self.online_users = []
@@ -119,10 +119,11 @@ class RelayClient:
         try:
             self.ws = await websockets.connect(self.url)
 
-            # Authenticate
+            # Authenticate with shared secret
             await self.ws.send(json.dumps({
                 "type": "auth",
-                "token": self.token
+                "secret": self.secret,
+                "username": self.local_username
             }))
 
             response = json.loads(await self.ws.recv())
@@ -708,9 +709,9 @@ class MessageWindow:
             self.relay_indicator.config(text="(local only)")
             return
 
-        token = get_relay_token()
-        if not token:
-            self.relay_indicator.config(text="(not logged in)")
+        secret = get_relay_secret()
+        if not secret:
+            self.relay_indicator.config(text="(no secret)")
             return
 
         # Start relay in background thread
@@ -755,7 +756,8 @@ class MessageWindow:
 
             self.relay_client = RelayClient(
                 get_relay_url(),
-                get_relay_token(),
+                get_relay_secret(),
+                self.username,
                 on_message=on_message,
                 on_presence=on_presence,
                 on_status=on_status,

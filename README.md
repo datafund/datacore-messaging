@@ -34,8 +34,8 @@ messaging:
   default_space: datafund          # Default space for /msg
   show_in_today: true              # Include unread count in /today briefing
   relay:
-    enabled: true                  # Enable relay for remote messaging
-    url: "wss://datacore-relay.fly.dev"  # Relay server URL
+    secret: "your-team-shared-secret"    # Shared secret (same for all team members)
+    url: "wss://datacore-relay.fly.dev"  # Relay server URL (optional)
 ```
 
 ## Usage
@@ -109,9 +109,6 @@ datacore-msg read --all
 datacore-msg peers
 datacore-msg watch      # Watch for new messages
 datacore-msg daemon     # Run notification daemon (background)
-
-# Relay commands
-datacore-msg login      # Authenticate with GitHub OAuth
 datacore-msg connect    # Connect to relay in interactive mode
 ```
 
@@ -165,14 +162,15 @@ The relay server enables messaging between users on different machines over the 
 
 ### Deploy Your Own Relay
 
-1. **Create GitHub OAuth App**
+1. **Generate a shared secret**
 
-   Go to [GitHub Developer Settings](https://github.com/settings/developers) → OAuth Apps → New OAuth App:
-   - Application name: `Datacore Relay`
-   - Homepage URL: `https://datacore-relay.fly.dev`
-   - Authorization callback URL: `https://datacore-relay.fly.dev/auth/callback`
+   ```bash
+   # Generate a random secret
+   openssl rand -hex 32
+   # Example output: a1b2c3d4e5f6...
+   ```
 
-   Save the Client ID and Client Secret.
+   Share this secret with your team members (via secure channel).
 
 2. **Deploy to fly.io**
 
@@ -187,13 +185,8 @@ The relay server enables messaging between users on different machines over the 
    cd ~/.datacore/modules/messaging
    fly launch --copy-config --name datacore-relay
 
-   # Set secrets
-   fly secrets set GITHUB_CLIENT_ID=your_client_id
-   fly secrets set GITHUB_CLIENT_SECRET=your_client_secret
-   fly secrets set RELAY_SECRET=$(openssl rand -hex 32)
-
-   # Optional: restrict to org members
-   fly secrets set ALLOWED_ORG=datafund
+   # Set the shared secret
+   fly secrets set RELAY_SECRET=your-shared-secret
 
    # Deploy
    fly deploy
@@ -201,20 +194,19 @@ The relay server enables messaging between users on different machines over the 
 
 3. **Configure Clients**
 
-   Add to `settings.local.yaml`:
+   Each team member adds to their `settings.local.yaml`:
    ```yaml
    messaging:
      relay:
-       enabled: true
+       secret: "your-shared-secret"  # Same secret for everyone
        url: "wss://datacore-relay.fly.dev"
    ```
 
-4. **Login**
+4. **Connect**
 
    ```bash
-   datacore-msg login
-   # Opens browser for GitHub OAuth
-   # Paste token when prompted
+   datacore-msg connect
+   # Or just run datacore-msg - it auto-connects if secret is configured
    ```
 
 ### Relay Protocol
@@ -222,8 +214,8 @@ The relay server enables messaging between users on different machines over the 
 The relay uses JSON over WebSocket:
 
 ```json
-// Authentication
-{"type": "auth", "token": "..."}
+// Authentication (shared secret)
+{"type": "auth", "secret": "your-shared-secret", "username": "gregor"}
 {"type": "auth_ok", "username": "gregor", "online": ["crt", "claude"]}
 
 // Send message
@@ -329,7 +321,6 @@ Online peers discovered via:
 | `datacore-msg peers` | List online peers |
 | `datacore-msg watch` | Watch for new messages |
 | `datacore-msg daemon` | Run notification daemon |
-| `datacore-msg login` | GitHub OAuth login for relay |
 | `datacore-msg connect` | Connect to relay server |
 
 ## Integration

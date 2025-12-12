@@ -2,46 +2,34 @@
 """
 datacore-msg-relay - WebSocket relay server for Datacore messaging
 
-Deployed on fly.io, authenticates users via GitHub OAuth.
+Simple shared-secret authentication for team messaging.
 
 Environment variables:
-    GITHUB_CLIENT_ID     - GitHub OAuth app client ID
-    GITHUB_CLIENT_SECRET - GitHub OAuth app client secret
-    RELAY_SECRET         - Secret for signing session tokens
-    ALLOWED_ORG          - (optional) Restrict to GitHub org members
+    RELAY_SECRET - Shared secret for authentication (required)
+    PORT         - Server port (default: 8080)
 
 Usage:
     # Local development
-    python datacore-msg-relay.py
+    RELAY_SECRET=mysecret python datacore-msg-relay.py
 
     # Production (fly.io)
+    fly secrets set RELAY_SECRET=$(openssl rand -hex 32)
     fly deploy
 """
 
 import asyncio
-import hashlib
-import hmac
 import json
 import os
-import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Optional
-from urllib.parse import parse_qs, urlencode
 
-import aiohttp
 from aiohttp import web, WSMsgType
 
 # === CONFIG ===
 
-GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
-GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
-RELAY_SECRET = os.environ.get("RELAY_SECRET", secrets.token_hex(32))
-ALLOWED_ORG = os.environ.get("ALLOWED_ORG", "")  # e.g., "datafund"
+RELAY_SECRET = os.environ.get("RELAY_SECRET", "")
 PORT = int(os.environ.get("PORT", 8080))
-
-# Token validity: 7 days
-TOKEN_EXPIRY = 7 * 24 * 60 * 60
 
 
 # === DATA STRUCTURES ===
@@ -51,8 +39,6 @@ class User:
     """Connected user."""
     username: str
     ws: web.WebSocketResponse
-    github_id: int
-    avatar_url: str = ""
     connected_at: float = field(default_factory=time.time)
 
 
@@ -60,7 +46,6 @@ class User:
 class RelayServer:
     """Manages WebSocket connections and message routing."""
     users: dict[str, User] = field(default_factory=dict)
-    pending_auth: dict[str, dict] = field(default_factory=dict)  # state -> callback info
 
     def add_user(self, user: User):
         """Add connected user."""
@@ -98,190 +83,7 @@ class RelayServer:
 relay = RelayServer()
 
 
-# === AUTH ===
-
-def generate_token(username: str, github_id: int) -> str:
-    """Generate signed session token."""
-    expires = int(time.time()) + TOKEN_EXPIRY
-    payload = f"{username}:{github_id}:{expires}"
-    sig = hmac.new(
-        RELAY_SECRET.encode(),
-        payload.encode(),
-        hashlib.sha256
-    ).hexdigest()[:16]
-    return f"{payload}:{sig}"
-
-
-def verify_token(token: str) -> Optional[tuple[str, int]]:
-    """Verify token and return (username, github_id) or None."""
-    try:
-        parts = token.split(":")
-        if len(parts) != 4:
-            return None
-
-        username, github_id, expires, sig = parts
-        expires = int(expires)
-        github_id = int(github_id)
-
-        # Check expiry
-        if time.time() > expires:
-            return None
-
-        # Verify signature
-        payload = f"{username}:{github_id}:{expires}"
-        expected_sig = hmac.new(
-            RELAY_SECRET.encode(),
-            payload.encode(),
-            hashlib.sha256
-        ).hexdigest()[:16]
-
-        if not hmac.compare_digest(sig, expected_sig):
-            return None
-
-        return (username, github_id)
-    except:
-        return None
-
-
-async def check_org_membership(token: str, org: str) -> bool:
-    """Check if user is member of GitHub org."""
-    if not org:
-        return True
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
-            f"https://api.github.com/user/orgs",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github.v3+json"
-            }
-        ) as resp:
-            if resp.status != 200:
-                return False
-            orgs = await resp.json()
-            return any(o.get("login") == org for o in orgs)
-
-
 # === HTTP HANDLERS ===
-
-async def handle_auth_start(request: web.Request) -> web.Response:
-    """Start GitHub OAuth flow."""
-    if not GITHUB_CLIENT_ID:
-        return web.json_response(
-            {"error": "OAuth not configured"},
-            status=500
-        )
-
-    # Generate state for CSRF protection
-    state = secrets.token_urlsafe(32)
-    callback_url = request.query.get("callback", "")
-
-    relay.pending_auth[state] = {
-        "callback": callback_url,
-        "created": time.time()
-    }
-
-    # Clean old pending auth states
-    now = time.time()
-    relay.pending_auth = {
-        k: v for k, v in relay.pending_auth.items()
-        if now - v["created"] < 600  # 10 minute expiry
-    }
-
-    params = urlencode({
-        "client_id": GITHUB_CLIENT_ID,
-        "redirect_uri": f"{request.scheme}://{request.host}/auth/callback",
-        "scope": "read:user read:org",
-        "state": state
-    })
-
-    return web.HTTPFound(f"https://github.com/login/oauth/authorize?{params}")
-
-
-async def handle_auth_callback(request: web.Request) -> web.Response:
-    """Handle GitHub OAuth callback."""
-    code = request.query.get("code")
-    state = request.query.get("state")
-
-    if not code or not state:
-        return web.Response(text="Missing code or state", status=400)
-
-    # Verify state
-    auth_info = relay.pending_auth.pop(state, None)
-    if not auth_info:
-        return web.Response(text="Invalid or expired state", status=400)
-
-    # Exchange code for token
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            "https://github.com/login/oauth/access_token",
-            headers={"Accept": "application/json"},
-            data={
-                "client_id": GITHUB_CLIENT_ID,
-                "client_secret": GITHUB_CLIENT_SECRET,
-                "code": code,
-                "redirect_uri": f"{request.scheme}://{request.host}/auth/callback"
-            }
-        ) as resp:
-            if resp.status != 200:
-                return web.Response(text="Token exchange failed", status=500)
-            token_data = await resp.json()
-
-        access_token = token_data.get("access_token")
-        if not access_token:
-            error = token_data.get("error_description", "Unknown error")
-            return web.Response(text=f"Auth failed: {error}", status=400)
-
-        # Get user info
-        async with session.get(
-            "https://api.github.com/user",
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Accept": "application/vnd.github.v3+json"
-            }
-        ) as resp:
-            if resp.status != 200:
-                return web.Response(text="Failed to get user info", status=500)
-            user_data = await resp.json()
-
-        # Check org membership if required
-        if ALLOWED_ORG:
-            is_member = await check_org_membership(access_token, ALLOWED_ORG)
-            if not is_member:
-                return web.Response(
-                    text=f"Access denied: not a member of {ALLOWED_ORG}",
-                    status=403
-                )
-
-    username = user_data["login"]
-    github_id = user_data["id"]
-
-    # Generate relay token
-    relay_token = generate_token(username, github_id)
-
-    # Return token (either via callback or directly)
-    callback = auth_info.get("callback")
-    if callback:
-        # Redirect to callback with token
-        return web.HTTPFound(f"{callback}?token={relay_token}&username={username}")
-
-    # Return HTML page that can be read by CLI
-    html = f"""<!DOCTYPE html>
-<html>
-<head><title>Datacore Auth Success</title></head>
-<body>
-<h1>Authentication Successful</h1>
-<p>You are signed in as <strong>@{username}</strong></p>
-<p>Token: <code id="token">{relay_token}</code></p>
-<p>You can close this window and return to the terminal.</p>
-<script>
-// Try to copy token to clipboard
-navigator.clipboard.writeText("{relay_token}").catch(() => {{}});
-</script>
-</body>
-</html>"""
-    return web.Response(text=html, content_type="text/html")
-
 
 async def handle_status(request: web.Request) -> web.Response:
     """Return relay status."""
@@ -300,7 +102,6 @@ async def handle_websocket(request: web.Request) -> web.WebSocketResponse:
     await ws.prepare(request)
 
     username = None
-    github_id = None
 
     try:
         async for msg in ws:
@@ -315,23 +116,37 @@ async def handle_websocket(request: web.Request) -> web.WebSocketResponse:
 
                 # === AUTH ===
                 if msg_type == "auth":
-                    token = data.get("token")
-                    result = verify_token(token)
+                    secret = data.get("secret", "")
+                    claimed_username = data.get("username", "")
 
-                    if not result:
+                    # Verify shared secret
+                    if not RELAY_SECRET:
                         await ws.send_json({
                             "type": "auth_error",
-                            "message": "Invalid or expired token"
+                            "message": "Server not configured (no RELAY_SECRET)"
                         })
                         continue
 
-                    username, github_id = result
+                    if secret != RELAY_SECRET:
+                        await ws.send_json({
+                            "type": "auth_error",
+                            "message": "Invalid secret"
+                        })
+                        continue
+
+                    if not claimed_username:
+                        await ws.send_json({
+                            "type": "auth_error",
+                            "message": "Username required"
+                        })
+                        continue
+
+                    username = claimed_username
 
                     # Add to relay
                     relay.add_user(User(
                         username=username,
-                        ws=ws,
-                        github_id=github_id
+                        ws=ws
                     ))
 
                     await ws.send_json({
@@ -389,7 +204,7 @@ async def handle_websocket(request: web.Request) -> web.WebSocketResponse:
                         "to": to_user,
                         "msg_id": msg_id,
                         "delivered": delivered,
-                        "queued": not delivered  # If not delivered, it's queued locally
+                        "queued": not delivered
                     })
 
                 # === PING/PONG ===
@@ -432,8 +247,6 @@ def create_app() -> web.Application:
 
     app.router.add_get("/", handle_status)
     app.router.add_get("/status", handle_status)
-    app.router.add_get("/auth/start", handle_auth_start)
-    app.router.add_get("/auth/callback", handle_auth_callback)
     app.router.add_get("/ws", handle_websocket)
 
     return app
@@ -441,13 +254,15 @@ def create_app() -> web.Application:
 
 def main():
     """Run the relay server."""
-    if not GITHUB_CLIENT_ID or not GITHUB_CLIENT_SECRET:
-        print("Warning: GITHUB_CLIENT_ID/SECRET not set. OAuth disabled.")
-        print("Set these environment variables for production use.")
+    if not RELAY_SECRET:
+        print("WARNING: RELAY_SECRET not set!")
+        print("Set RELAY_SECRET environment variable for authentication.")
+        print("Example: RELAY_SECRET=mysecret python datacore-msg-relay.py")
+        print()
 
     app = create_app()
     print(f"Starting relay server on port {PORT}")
-    print(f"Allowed org: {ALLOWED_ORG or '(any)'}")
+    print(f"Secret configured: {'yes' if RELAY_SECRET else 'NO'}")
     web.run_app(app, port=PORT)
 
 

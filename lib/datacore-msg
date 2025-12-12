@@ -26,7 +26,6 @@ import json
 import os
 import sys
 import fcntl
-import webbrowser
 from pathlib import Path
 from datetime import datetime
 
@@ -42,7 +41,6 @@ except ImportError:
 DATACORE_ROOT = Path(os.environ.get("DATACORE_ROOT", Path.home() / "Data"))
 SOCK_DIR = Path("/tmp")
 CLAUDE_PIPE = Path("/tmp/datacore-claude.pipe")
-TOKEN_FILE = DATACORE_ROOT / ".datacore/state/relay-token"
 DEFAULT_RELAY = "wss://datacore-relay.fly.dev"
 
 
@@ -91,29 +89,23 @@ def get_relay_url() -> str:
     return conf.get("messaging", {}).get("relay", {}).get("url", DEFAULT_RELAY)
 
 
+def get_relay_secret() -> str | None:
+    """Get relay shared secret from settings."""
+    conf = get_settings()
+    return conf.get("messaging", {}).get("relay", {}).get("secret")
+
+
 def is_relay_enabled() -> bool:
     """Check if relay is enabled in settings."""
     conf = get_settings()
-    return conf.get("messaging", {}).get("relay", {}).get("enabled", False)
+    relay_conf = conf.get("messaging", {}).get("relay", {})
+    # Enabled if explicitly set or if secret is configured
+    return relay_conf.get("enabled", False) or bool(relay_conf.get("secret"))
 
 
 def get_socket_path(user: str) -> Path:
     """Get socket path for user."""
     return SOCK_DIR / f"datacore-msg-{user}.sock"
-
-
-def get_relay_token() -> str | None:
-    """Get stored relay token."""
-    if TOKEN_FILE.exists():
-        return TOKEN_FILE.read_text().strip()
-    return None
-
-
-def save_relay_token(token: str):
-    """Save relay token."""
-    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TOKEN_FILE.write_text(token)
-    TOKEN_FILE.chmod(0o600)
 
 
 # === MESSAGE STORE ===
@@ -322,9 +314,10 @@ def list_online_peers_local() -> list:
 class RelayClient:
     """WebSocket client for relay server."""
 
-    def __init__(self, url: str, token: str):
+    def __init__(self, url: str, secret: str, username: str):
         self.url = url
-        self.token = token
+        self.secret = secret
+        self.local_username = username
         self.ws = None
         self.username = None
         self.online_users = []
@@ -338,10 +331,11 @@ class RelayClient:
 
         self.ws = await websockets.connect(self.url)
 
-        # Authenticate
+        # Authenticate with shared secret
         await self.ws.send(json.dumps({
             "type": "auth",
-            "token": self.token
+            "secret": self.secret,
+            "username": self.local_username
         }))
 
         response = json.loads(await self.ws.recv())
@@ -538,19 +532,23 @@ async def interactive_mode_relay():
         print("Run: pip install websockets")
         return
 
-    token = get_relay_token()
-    if not token:
-        print("Not authenticated. Run: datacore-msg login")
+    secret = get_relay_secret()
+    if not secret:
+        print("Relay secret not configured.")
+        print("Add to settings.local.yaml:")
+        print("  messaging:")
+        print("    relay:")
+        print("      secret: your-shared-secret")
         return
 
     relay_url = get_relay_url()
-    relay = RelayClient(relay_url, token)
+    username = get_username()
+    relay = RelayClient(relay_url, secret, username)
 
     try:
         await relay.connect()
     except Exception as e:
         print(f"Connection failed: {e}")
-        print("Try: datacore-msg login")
         return
 
     username = relay.username
@@ -648,34 +646,13 @@ async def interactive_mode_relay():
 
 async def interactive_mode():
     """Interactive mode - chooses relay or local based on settings."""
-    if is_relay_enabled() and get_relay_token():
+    if is_relay_enabled() and get_relay_secret():
         await interactive_mode_relay()
     else:
         await interactive_mode_local()
 
 
 # === CLI ===
-
-def cmd_login(args):
-    """Handle login command."""
-    relay_url = get_relay_url().replace("wss://", "https://").replace("ws://", "http://")
-    auth_url = f"{relay_url}/auth/start"
-
-    print(f"Opening browser for GitHub authentication...")
-    print(f"URL: {auth_url}")
-    print()
-    print("After authenticating, copy the token from the page.")
-    print()
-
-    webbrowser.open(auth_url)
-
-    token = input("Paste token here: ").strip()
-    if token:
-        save_relay_token(token)
-        print("✓ Token saved. You can now use: datacore-msg connect")
-    else:
-        print("No token provided.")
-
 
 async def cmd_connect(args):
     """Handle connect command."""
@@ -712,9 +689,6 @@ def main():
     # daemon
     subparsers.add_parser("daemon", help="Run notification daemon")
 
-    # login
-    subparsers.add_parser("login", help="Authenticate with relay server")
-
     # connect
     subparsers.add_parser("connect", help="Connect to relay server")
 
@@ -728,10 +702,10 @@ def main():
         async def send_with_notify():
             # Try relay first if enabled
             if is_relay_enabled():
-                token = get_relay_token()
-                if token:
+                secret = get_relay_secret()
+                if secret:
                     try:
-                        relay = RelayClient(get_relay_url(), token)
+                        relay = RelayClient(get_relay_url(), secret, get_username())
                         await relay.connect()
                         delivered = await notify_peer_relay(relay, recipient, text, msg_id, args.priority)
                         await relay.close()
@@ -771,11 +745,11 @@ def main():
 
         # Also check relay if enabled
         if is_relay_enabled():
-            token = get_relay_token()
-            if token:
+            secret = get_relay_secret()
+            if secret:
                 async def get_relay_peers():
                     try:
-                        relay = RelayClient(get_relay_url(), token)
+                        relay = RelayClient(get_relay_url(), secret, get_username())
                         await relay.connect()
                         online = await relay.get_presence()
                         await relay.close()
@@ -799,9 +773,6 @@ def main():
         except KeyboardInterrupt:
             daemon.cleanup()
             print("\nDaemon stopped.")
-
-    elif args.command == "login":
-        cmd_login(args)
 
     elif args.command == "connect":
         asyncio.run(cmd_connect(args))
