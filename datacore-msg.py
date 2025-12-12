@@ -100,7 +100,7 @@ def get_default_space() -> str:
 
 def get_relay_url() -> str:
     conf = get_settings()
-    return conf.get("messaging", {}).get("relay", {}).get("url", "wss://datacore-messaging-relay.datafund.io/ws")
+    return conf.get("messaging", {}).get("relay", {}).get("url", "wss://chat.datafund.io/ws")
 
 
 def get_relay_secret() -> str:
