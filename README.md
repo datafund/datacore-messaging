@@ -71,6 +71,7 @@ Type in the input field:
 |---------|-------------|
 | `/mine` | Show my unread messages |
 | `/todos` | Show my TODO messages |
+| `/tasks` | Show Claude task queue (working/pending/done) |
 | `/context <id>` | Show thread context for a message |
 | `/online` | Show online users with status |
 | `/status` | Show your current status |
@@ -157,7 +158,15 @@ python3 hooks/send-reply.py gregor "Fixed! Check the PR."
 
 # Reply to a specific message (creates thread)
 python3 hooks/send-reply.py --reply-to msg-20251212-143000-gregor gregor "Here's the follow-up"
+
+# Mark task as complete and reply (updates TASK_STATUS to done)
+python3 hooks/send-reply.py --complete msg-20251212-143000-gregor gregor "Task complete! See results."
 ```
+
+**Task Status Tracking:**
+- When Claude reads a message, it's marked as `TASK_STATUS: working`
+- Using `--complete` marks the original task as `TASK_STATUS: done`
+- Use `/tasks` in GUI to see task queue status
 
 The reply is:
 1. Saved to the recipient's inbox (`gregor.org`)

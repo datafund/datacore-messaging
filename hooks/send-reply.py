@@ -5,10 +5,12 @@ Helper script for Claude to send replies via the messaging system.
 Usage:
     ./send-reply.py <to_user> <message>
     ./send-reply.py --reply-to <msg-id> <to_user> <message>
+    ./send-reply.py --complete <msg-id> <to_user> <message>
 
 Example:
     ./send-reply.py tex "I've completed the task you requested!"
     ./send-reply.py --reply-to msg-20251212-143000-tex tex "Here's the follow-up"
+    ./send-reply.py --complete msg-20251212-143000-gregor gregor "Task complete! See results."
 """
 
 import os
@@ -76,6 +78,72 @@ def get_thread_for_message(msg_id):
         except:
             pass
     return None
+
+
+def mark_task_done(msg_id):
+    """Mark a task message as done with completion timestamp."""
+    now = datetime.now().strftime("[%Y-%m-%d %a %H:%M]")
+
+    for inbox in DATACORE_ROOT.glob("*/org/inboxes/*.org"):
+        try:
+            content = inbox.read_text()
+            if msg_id not in content:
+                continue
+
+            lines = content.split('\n')
+            new_lines = []
+            modified = False
+            i = 0
+
+            while i < len(lines):
+                line = lines[i]
+
+                # Check if this MESSAGE block contains our msg_id
+                if line.startswith('* MESSAGE ['):
+                    block_end = min(i + 20, len(lines))
+                    block_has_id = any(msg_id in lines[j] for j in range(i, block_end))
+
+                    if block_has_id:
+                        # Add :done: tag if not present
+                        if ':done:' not in line:
+                            line = line.rstrip() + ' :done:'
+                        new_lines.append(line)
+                        i += 1
+
+                        # Process properties block
+                        while i < len(lines):
+                            prop_line = lines[i]
+
+                            # Update TASK_STATUS if present
+                            if ':TASK_STATUS:' in prop_line:
+                                new_lines.append(':TASK_STATUS: done')
+                                i += 1
+                                continue
+
+                            if ':END:' in prop_line:
+                                # Add COMPLETED_AT before :END:
+                                new_lines.append(f":COMPLETED_AT: {now}")
+                                new_lines.append(prop_line)
+                                i += 1
+                                break
+
+                            new_lines.append(prop_line)
+                            i += 1
+
+                        modified = True
+                        continue
+
+                new_lines.append(line)
+                i += 1
+
+            if modified:
+                inbox.write_text('\n'.join(new_lines))
+                return True
+
+        except Exception as e:
+            pass
+
+    return False
 
 
 def write_to_inbox(to_user, text, reply_to=None):
@@ -170,6 +238,7 @@ async def send_via_relay(to_user, text, msg_id, thread_id=None, reply_to=None):
 def main():
     args = sys.argv[1:]
     reply_to = None
+    complete_id = None
 
     # Parse --reply-to flag
     if "--reply-to" in args:
@@ -178,12 +247,29 @@ def main():
             reply_to = args[idx + 1]
             args = args[:idx] + args[idx + 2:]
 
+    # Parse --complete flag
+    if "--complete" in args:
+        idx = args.index("--complete")
+        if idx + 1 < len(args):
+            complete_id = args[idx + 1]
+            # --complete implies --reply-to for threading
+            if not reply_to:
+                reply_to = complete_id
+            args = args[:idx] + args[idx + 2:]
+
     if len(args) < 2:
-        print("Usage: send-reply.py [--reply-to <msg-id>] <to_user> <message>", file=sys.stderr)
+        print("Usage: send-reply.py [--reply-to <msg-id>] [--complete <msg-id>] <to_user> <message>", file=sys.stderr)
         sys.exit(1)
 
     to_user = args[0]
     text = " ".join(args[1:])
+
+    # Mark original task as done if --complete specified
+    if complete_id:
+        if mark_task_done(complete_id):
+            print(f"✓ Task {complete_id} marked as done")
+        else:
+            print(f"⚠ Could not find task {complete_id} to mark done")
 
     # Write to local inbox
     msg_id, thread_id = write_to_inbox(to_user, text, reply_to=reply_to)

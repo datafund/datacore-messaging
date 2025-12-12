@@ -693,6 +693,9 @@ class MessageWindow(QMainWindow):
         elif cmd_name == "/context" and len(parts) >= 2:
             self._show_context(parts[1])
             return True
+        elif cmd_name == "/tasks":
+            self._show_tasks()
+            return True
         return False
 
     def _on_status_change(self, msg_id: str, current_status: str):
@@ -785,10 +788,11 @@ class MessageWindow(QMainWindow):
             ("@user >id text", "Reply to message (thread)"),
             ("/mine", "Show unread messages"),
             ("/todos", "Show TODO messages"),
+            ("/tasks", "Show Claude task queue"),
             ("/context <id>", "Show thread context"),
             ("/online", "Show online users"),
             ("/status [val]", "Set status (busy/away/focusing)"),
-            ("/relay", "Show relay connection info"),
+            ("/relay", "Show relay info"),
             ("/clear", "Clear display"),
         ]
 
@@ -869,6 +873,61 @@ class MessageWindow(QMainWindow):
             self._status_change_pending = new_status
         else:
             self._status_change_pending = new_status
+
+    def _show_tasks(self):
+        """Show Claude task queue status."""
+        self._add_text_to_stream("─── Claude Tasks ───", "#c586c0", bold=True)
+
+        tasks = {"working": [], "pending": [], "done": []}
+
+        # Check Claude inbox for tasks
+        for inbox in DATACORE_ROOT.glob(f"*/org/inboxes/{self.username}-claude.org"):
+            try:
+                content = inbox.read_text()
+                for block in content.split("\n* MESSAGE ")[1:]:
+                    msg = self._parse_message(block)
+                    if not msg:
+                        continue
+
+                    # Check task status from properties
+                    task_status = None
+                    for line in block.split("\n"):
+                        if ":TASK_STATUS:" in line:
+                            task_status = line.split(":TASK_STATUS:")[1].strip()
+                            break
+
+                    if task_status == "working":
+                        tasks["working"].append(msg)
+                    elif task_status == "done":
+                        tasks["done"].append(msg)
+                    elif msg.get("unread"):
+                        tasks["pending"].append(msg)
+            except:
+                pass
+
+        # Display working tasks
+        if tasks["working"]:
+            for msg in tasks["working"]:
+                text = msg["text"][:50] + "..." if len(msg["text"]) > 50 else msg["text"]
+                self._add_text_to_stream(f"  🔄 {text}", "#dcdcaa")
+                self._add_text_to_stream(f"     from @{msg['from']} ({msg.get('time', '?')})", "#666")
+        else:
+            self._add_text_to_stream("  No tasks in progress", "#666")
+
+        # Display pending tasks
+        if tasks["pending"]:
+            self._add_text_to_stream(f"  📋 {len(tasks['pending'])} pending:", "#4ec9b0")
+            for msg in tasks["pending"][:3]:
+                text = msg["text"][:40] + "..." if len(msg["text"]) > 40 else msg["text"]
+                self._add_text_to_stream(f"     • {text}", "#666")
+            if len(tasks["pending"]) > 3:
+                self._add_text_to_stream(f"     ... and {len(tasks['pending']) - 3} more", "#666")
+
+        # Display recently done
+        if tasks["done"]:
+            self._add_text_to_stream(f"  ✓ {len(tasks['done'])} completed", "#4ec9b0")
+
+        self.input_field.clear()
 
     def _show_context(self, msg_id_fragment: str):
         """Show conversation context for a message or thread."""

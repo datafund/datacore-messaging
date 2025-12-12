@@ -110,21 +110,58 @@ def parse_messages(content):
 
     return messages
 
-def mark_messages_as_read(inbox_path, message_ids):
-    """Remove :unread: tag from messages in the org file."""
+def mark_messages_as_working(inbox_path, message_ids):
+    """Mark messages as 'working' - remove :unread:, add TASK_STATUS and STARTED_AT."""
     if not inbox_path.exists():
         return
 
     content = inbox_path.read_text()
     modified = False
+    now = datetime.now().strftime("[%Y-%m-%d %a %H:%M]")
 
     for msg_id in message_ids:
-        # Find the message block and remove :unread: tag
-        # Pattern: MESSAGE [timestamp] :unread: followed by :ID: msg_id
-        pattern = rf'(\* MESSAGE \[[^\]]+\]) :unread:(.*?:ID: {re.escape(msg_id)})'
-        if re.search(pattern, content, re.DOTALL):
-            content = re.sub(pattern, r'\1\2', content, flags=re.DOTALL)
-            modified = True
+        # Find the message block and update it
+        lines = content.split('\n')
+        new_lines = []
+        i = 0
+
+        while i < len(lines):
+            line = lines[i]
+
+            # Check if this MESSAGE block contains our msg_id
+            if line.startswith('* MESSAGE [') and ':unread:' in line:
+                block_end = min(i + 15, len(lines))
+                block_has_id = any(msg_id in lines[j] for j in range(i, block_end))
+
+                if block_has_id:
+                    # Remove :unread: tag
+                    header = line.replace(' :unread:', '')
+                    new_lines.append(header)
+                    i += 1
+
+                    # Process properties block
+                    while i < len(lines):
+                        prop_line = lines[i]
+                        new_lines.append(prop_line)
+
+                        if ':END:' in prop_line:
+                            # Insert task status properties before :END:
+                            new_lines.pop()  # Remove :END: temporarily
+                            new_lines.append(f":TASK_STATUS: working")
+                            new_lines.append(f":STARTED_AT: {now}")
+                            new_lines.append(prop_line)  # Put :END: back
+                            i += 1
+                            break
+                        i += 1
+
+                    modified = True
+                    continue
+
+            new_lines.append(line)
+            i += 1
+
+        if modified:
+            content = '\n'.join(new_lines)
 
     if modified:
         inbox_path.write_text(content)
@@ -166,10 +203,11 @@ def main():
 
     print("---")
     print("To reply: use hooks/send-reply.py <user> <message>")
-    print("Messages above are now marked as read.")
+    print("To mark done: use hooks/send-reply.py --complete <msg-id> <user> <message>")
+    print("Tasks are now marked as 'working'.")
 
-    # Mark messages as read in the org file
-    mark_messages_as_read(inbox, [m["id"] for m in new_messages])
+    # Mark messages as working in the org file
+    mark_messages_as_working(inbox, [m["id"] for m in new_messages])
 
     sys.exit(0)
 
