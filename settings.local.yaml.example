@@ -3,9 +3,33 @@
 
 identity:
   name: yourname                   # Your username (required)
+  # Your Claude agent will connect as: yourname-claude
 
 messaging:
-  default_space: datafund          # Default space for messages
+  default_space: 1-team            # Space for message inboxes (e.g., 1-datafund)
+
+  # Users allowed to message YOUR Claude agent (@yourname-claude)
+  # Others get auto-reply without involving the LLM
+  claude_whitelist:
+    - gregor                       # @gregor can message @yourname-claude
+    - crt                          # @crt can message @yourname-claude
+    # Leave empty [] to allow everyone, or omit to disable whitelist
+
   relay:
-    secret: "your-team-shared-secret"    # Same for all team members
-    url: "wss://datacore-relay.fly.dev"  # Your relay server URL
+    secret: "your-team-shared-secret"    # Same secret for all team members
+    url: "wss://datacore-messaging-relay.datafund.io/ws"  # Production relay
+    # url: "ws://localhost:8080/ws"      # Local dev server
+
+# Routing:
+#   @claude        → automatically routes to @<sender>-claude (your own Claude)
+#   @gregor-claude → goes to Gregor's Claude (if you're whitelisted)
+#
+# User naming convention:
+#   @yourname       - Your human identity (GUI window)
+#   @yourname-claude - Your personal Claude agent
+#
+# Example:
+#   @tex           - Tex's GUI window
+#   @tex-claude    - Tex's Claude Code session
+#   @gregor        - Gregor's GUI window
+#   @gregor-claude - Gregor's Claude Code session

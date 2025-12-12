@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-datacore-msg-window - Floating message overlay for Datacore
+datacore-msg-window - Floating message overlay for Datacore (PyQt6 version)
 
 A small always-on-top window that shows messages in real-time.
 Supports both local file watching and WebSocket relay for remote messages.
@@ -8,23 +8,26 @@ Supports both local file watching and WebSocket relay for remote messages.
 Usage:
     python datacore-msg-window.py
 
-    # Or with custom identity
-    DATACORE_USER=gregor python datacore-msg-window.py
-
 Requirements:
-    - Python 3.8+ (tkinter included)
-    - websockets (optional, for relay support): pip install websockets
+    - Python 3.8+
+    - PyQt6: pip install PyQt6
+    - websockets (optional): pip install websockets
 """
 
-import tkinter as tk
+import sys
+import os
+import json
 import threading
 import asyncio
-import os
-import sys
-import json
 from pathlib import Path
 from datetime import datetime
-import subprocess
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QTextEdit, QLineEdit, QLabel, QFrame, QScrollArea
+)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtGui import QFont, QColor, QTextCursor, QTextCharFormat
 
 # Optional websockets for relay
 try:
@@ -37,13 +40,16 @@ except ImportError:
 
 DATACORE_ROOT = Path(os.environ.get("DATACORE_ROOT", Path.home() / "Data"))
 MODULE_DIR = Path(__file__).parent.parent  # datacore-messaging/
-POLL_INTERVAL = 2  # seconds
-DEFAULT_RELAY = "wss://datacore-relay.fly.dev"
+POLL_INTERVAL = 2000  # milliseconds
 
 
 def get_settings() -> dict:
     """Load settings from yaml. Module settings take precedence."""
-    import yaml
+    try:
+        import yaml
+    except ImportError:
+        return {}
+
     settings = {}
 
     # First load from datacore root (base settings)
@@ -59,7 +65,6 @@ def get_settings() -> dict:
     if module_settings.exists():
         try:
             mod = yaml.safe_load(module_settings.read_text()) or {}
-            # Deep merge - module settings override root
             for key, value in mod.items():
                 if key in settings and isinstance(settings[key], dict) and isinstance(value, dict):
                     settings[key].update(value)
@@ -101,10 +106,10 @@ def get_default_space() -> str:
 def get_relay_url() -> str:
     """Get relay server URL from settings."""
     conf = get_settings()
-    return conf.get("messaging", {}).get("relay", {}).get("url", DEFAULT_RELAY)
+    return conf.get("messaging", {}).get("relay", {}).get("url", "wss://datacore-relay.fly.dev")
 
 
-def get_relay_secret() -> str | None:
+def get_relay_secret() -> str:
     """Get relay shared secret from settings."""
     conf = get_settings()
     return conf.get("messaging", {}).get("relay", {}).get("secret")
@@ -117,54 +122,61 @@ def is_relay_enabled() -> bool:
     return relay_conf.get("enabled", False) or bool(relay_conf.get("secret"))
 
 
+def get_claude_whitelist() -> list:
+    """Get list of users allowed to message this user's Claude."""
+    conf = get_settings()
+    return conf.get("messaging", {}).get("claude_whitelist", [])
+
+
+class SignalBridge(QObject):
+    """Bridge for thread-safe UI updates."""
+    message_received = pyqtSignal(str, str, str, bool, str, bool)
+    status_changed = pyqtSignal(str)
+    presence_changed = pyqtSignal(list)
+
+
 class RelayClient:
     """WebSocket client for relay server."""
 
-    def __init__(self, url: str, secret: str, username: str, on_message=None, on_presence=None, on_status=None):
+    def __init__(self, url: str, secret: str, username: str, bridge: SignalBridge, claude_whitelist: list = None):
         self.url = url
         self.secret = secret
         self.local_username = username
+        self.bridge = bridge
+        self.claude_whitelist = claude_whitelist or []
         self.ws = None
         self.username = None
         self.online_users = []
-        self.on_message = on_message
-        self.on_presence = on_presence
-        self.on_status = on_status
         self.running = False
-        self.loop = None
 
     async def connect(self):
         """Connect and authenticate with relay."""
         try:
             self.ws = await websockets.connect(self.url)
 
-            # Authenticate with shared secret
             await self.ws.send(json.dumps({
                 "type": "auth",
                 "secret": self.secret,
-                "username": self.local_username
+                "username": self.local_username,
+                "claude_whitelist": self.claude_whitelist
             }))
 
             response = json.loads(await self.ws.recv())
 
             if response.get("type") == "auth_error":
-                if self.on_status:
-                    self.on_status(f"Auth failed: {response.get('message')}")
+                self.bridge.status_changed.emit(f"Auth failed: {response.get('message')}")
                 return False
 
             if response.get("type") == "auth_ok":
                 self.username = response.get("username")
                 self.online_users = response.get("online", [])
-                if self.on_status:
-                    self.on_status(f"Connected to relay as @{self.username}")
-                if self.on_presence:
-                    self.on_presence(self.online_users)
+                self.bridge.status_changed.emit(f"● relay @{self.username}")
+                self.bridge.presence_changed.emit(self.online_users)
                 return True
 
             return False
         except Exception as e:
-            if self.on_status:
-                self.on_status(f"Connection failed: {e}")
+            self.bridge.status_changed.emit(f"Connection failed: {str(e)[:30]}")
             return False
 
     async def send_message(self, to: str, text: str, msg_id: str, priority: str = "normal") -> bool:
@@ -198,20 +210,21 @@ class RelayClient:
                 msg_type = data.get("type")
 
                 if msg_type == "message":
-                    if self.on_message:
-                        self.on_message(data)
+                    self.bridge.message_received.emit(
+                        data.get("from", "?"),
+                        data.get("text", ""),
+                        datetime.now().strftime("%H:%M"),
+                        True,  # unread
+                        data.get("priority", "normal"),
+                        True  # via_relay
+                    )
 
                 elif msg_type == "presence_change":
                     self.online_users = data.get("online", [])
-                    if self.on_presence:
-                        self.on_presence(self.online_users)
+                    self.bridge.presence_changed.emit(self.online_users)
 
-        except websockets.exceptions.ConnectionClosed:
-            if self.on_status:
-                self.on_status("Relay disconnected")
         except Exception as e:
-            if self.on_status:
-                self.on_status(f"Relay error: {e}")
+            self.bridge.status_changed.emit(f"Relay error: {str(e)[:20]}")
 
     async def close(self):
         """Close connection."""
@@ -220,278 +233,224 @@ class RelayClient:
             await self.ws.close()
 
 
-class MessageWindow:
-    """Floating message window with real-time updates."""
+class MessageWindow(QMainWindow):
+    """Main message window."""
 
     def __init__(self):
+        super().__init__()
+
         self.username = get_username()
         self.default_space = get_default_space()
         self.seen_ids = set()
         self.relay_client = None
         self.relay_connected = False
+        self.bridge = SignalBridge()
 
-        # Create window
-        self.root = tk.Tk()
-        self.root.title(f"Messages @{self.username}")
+        # Connect signals
+        self.bridge.message_received.connect(self.add_message)
+        self.bridge.status_changed.connect(self.update_relay_status)
+        self.bridge.presence_changed.connect(self.update_presence)
 
-        # Window properties
-        self.root.attributes("-topmost", True)
-        self.root.attributes("-alpha", 0.95)
-
-        # Position: top-right corner
-        screen_w = self.root.winfo_screenwidth()
-        window_w, window_h = 320, 450
-        self.root.geometry(f"{window_w}x{window_h}+{screen_w - window_w - 20}+40")
-
-        # Prevent resize below minimum
-        self.root.minsize(280, 300)
-
-        # Dark theme colors
-        self.bg_color = "#1e1e1e"
-        self.fg_color = "#d4d4d4"
-        self.accent_color = "#569cd6"
-        self.muted_color = "#666666"
-        self.unread_bg = "#2d2d30"
-        self.input_bg = "#333333"
-        self.online_color = "#4ec9b0"
-        self.relay_color = "#c586c0"
-
-        self.root.configure(bg=self.bg_color)
-
-        self._build_ui()
+        self._setup_ui()
         self._load_existing_messages()
         self._start_watcher()
         self._start_relay()
 
-    def _build_ui(self):
-        """Build the UI components."""
-        # Header with peers
-        self.header = tk.Frame(self.root, bg=self.bg_color)
-        self.header.pack(fill=tk.X, padx=10, pady=(10, 5))
+    def _setup_ui(self):
+        """Setup the user interface."""
+        self.setWindowTitle(f"Messages @{self.username}")
+        self.setGeometry(100, 100, 350, 500)
 
-        self.peers_label = tk.Label(
-            self.header,
-            text=f"@{self.username}",
-            bg=self.bg_color,
-            fg=self.accent_color,
-            font=("Monaco", 11, "bold"),
-            anchor="w",
-        )
-        self.peers_label.pack(side=tk.LEFT)
+        # Always on top
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
 
-        self.status_dot = tk.Label(
-            self.header,
-            text=" ●",
-            bg=self.bg_color,
-            fg=self.online_color,
-            font=("Monaco", 11),
-        )
-        self.status_dot.pack(side=tk.LEFT)
+        # Dark theme stylesheet
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #1e1e1e;
+            }
+            QLabel {
+                color: #d4d4d4;
+            }
+            QTextEdit {
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+                border: none;
+                font-family: Menlo, Monaco, monospace;
+                font-size: 12px;
+            }
+            QLineEdit {
+                background-color: #333333;
+                color: #ffffff;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                padding: 8px;
+                font-family: Menlo, Monaco, monospace;
+                font-size: 12px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #569cd6;
+            }
+        """)
 
-        # Relay indicator
-        self.relay_indicator = tk.Label(
-            self.header,
-            text="",
-            bg=self.bg_color,
-            fg=self.relay_color,
-            font=("Monaco", 9),
-        )
-        self.relay_indicator.pack(side=tk.RIGHT)
+        # Central widget
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
 
-        # Online users label
-        self.online_label = tk.Label(
-            self.header,
-            text="",
-            bg=self.bg_color,
-            fg=self.muted_color,
-            font=("Monaco", 9),
-        )
-        self.online_label.pack(side=tk.RIGHT, padx=(0, 10))
+        # Header
+        header = QHBoxLayout()
+
+        self.user_label = QLabel(f"@{self.username}")
+        self.user_label.setStyleSheet("color: #569cd6; font-weight: bold; font-size: 13px;")
+        header.addWidget(self.user_label)
+
+        self.status_dot = QLabel(" ●")
+        self.status_dot.setStyleSheet("color: #4ec9b0; font-size: 13px;")
+        header.addWidget(self.status_dot)
+
+        header.addStretch()
+
+        self.online_label = QLabel("")
+        self.online_label.setStyleSheet("color: #666666; font-size: 11px;")
+        header.addWidget(self.online_label)
+
+        self.relay_label = QLabel("(connecting...)")
+        self.relay_label.setStyleSheet("color: #c586c0; font-size: 11px;")
+        header.addWidget(self.relay_label)
+
+        layout.addLayout(header)
 
         # Messages area
-        self.messages_frame = tk.Frame(self.root, bg=self.bg_color)
-        self.messages_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-
-        # Scrollbar
-        self.scrollbar = tk.Scrollbar(self.messages_frame)
-        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        # Messages text widget
-        self.messages_text = tk.Text(
-            self.messages_frame,
-            bg=self.bg_color,
-            fg=self.fg_color,
-            font=("Monaco", 11),
-            wrap=tk.WORD,
-            state=tk.DISABLED,
-            borderwidth=0,
-            highlightthickness=0,
-            yscrollcommand=self.scrollbar.set,
-            cursor="arrow",
-        )
-        self.messages_text.pack(fill=tk.BOTH, expand=True)
-        self.scrollbar.config(command=self.messages_text.yview)
-
-        # Configure text tags for styling
-        self.messages_text.tag_configure("sender", foreground=self.accent_color, font=("Monaco", 11, "bold"))
-        self.messages_text.tag_configure("sender_you", foreground="#4ec9b0", font=("Monaco", 11, "bold"))
-        self.messages_text.tag_configure("sender_claude", foreground="#c586c0", font=("Monaco", 11, "bold"))
-        self.messages_text.tag_configure("sender_relay", foreground="#dcdcaa", font=("Monaco", 11, "bold"))
-        self.messages_text.tag_configure("time", foreground=self.muted_color, font=("Monaco", 9))
-        self.messages_text.tag_configure("unread_marker", foreground="#f48771")
-        self.messages_text.tag_configure("message_text", foreground=self.fg_color)
-        self.messages_text.tag_configure("priority_high", foreground="#f48771")
+        self.messages_area = QTextEdit()
+        self.messages_area.setReadOnly(True)
+        self.messages_area.setMinimumHeight(200)
+        layout.addWidget(self.messages_area, stretch=1)
 
         # Separator
-        separator = tk.Frame(self.root, height=1, bg=self.input_bg)
-        separator.pack(fill=tk.X, padx=10, pady=5)
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setStyleSheet("background-color: #333333;")
+        layout.addWidget(separator)
 
-        # Input area
-        self.input_frame = tk.Frame(self.root, bg=self.input_bg)
-        self.input_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
-
-        self.input_field = tk.Entry(
-            self.input_frame,
-            bg=self.input_bg,
-            fg="#ffffff",
-            font=("Monaco", 11),
-            insertbackground="#ffffff",
-            borderwidth=0,
-            relief=tk.FLAT,
-        )
-        self.input_field.pack(fill=tk.X, padx=8, pady=8)
-        self.input_field.insert(0, "@user message")
-        self.input_field.config(fg=self.muted_color)
-
-        # Input field events
-        self.input_field.bind("<FocusIn>", self._on_input_focus)
-        self.input_field.bind("<FocusOut>", self._on_input_blur)
-        self.input_field.bind("<Return>", self._send_message)
+        # Input field
+        self.input_field = QLineEdit()
+        self.input_field.setPlaceholderText("@user message")
+        self.input_field.returnPressed.connect(self._send_message)
+        layout.addWidget(self.input_field)
 
         # Status bar
-        self.status_bar = tk.Frame(self.root, bg=self.bg_color)
-        self.status_bar.pack(fill=tk.X, padx=10, pady=(0, 10))
+        self.status_label = QLabel(f"Space: {self.default_space}")
+        self.status_label.setStyleSheet("color: #666666; font-size: 11px;")
+        layout.addWidget(self.status_label)
 
-        self.status_label = tk.Label(
-            self.status_bar,
-            text=f"Space: {self.default_space}",
-            bg=self.bg_color,
-            fg=self.muted_color,
-            font=("Monaco", 9),
-            anchor="w",
-        )
-        self.status_label.pack(side=tk.LEFT)
+        # Position window at top-right
+        screen = QApplication.primaryScreen().geometry()
+        self.move(screen.width() - 370, 40)
 
-        # Keyboard shortcuts
-        self.root.bind("<Escape>", lambda e: self.root.iconify())
-        self.root.bind("<Command-w>", lambda e: self.root.iconify())
-
-    def _on_input_focus(self, event):
-        """Clear placeholder on focus."""
-        if self.input_field.get() == "@user message":
-            self.input_field.delete(0, tk.END)
-            self.input_field.config(fg="#ffffff")
-
-    def _on_input_blur(self, event):
-        """Restore placeholder on blur if empty."""
-        if not self.input_field.get():
-            self.input_field.insert(0, "@user message")
-            self.input_field.config(fg=self.muted_color)
-
-    def add_message(self, sender: str, text: str, time_str: str, unread: bool = False,
-                    priority: str = "normal", outgoing: bool = False, via_relay: bool = False):
+    def add_message(self, sender: str, text: str, time_str: str,
+                    unread: bool = False, priority: str = "normal", via_relay: bool = False):
         """Add a message to the display."""
-        self.messages_text.config(state=tk.NORMAL)
+        cursor = self.messages_area.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
 
         # Unread marker
         if unread:
-            self.messages_text.insert(tk.END, "● ", "unread_marker")
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor("#f48771"))
+            cursor.insertText("● ", fmt)
         else:
-            self.messages_text.insert(tk.END, "  ")
+            cursor.insertText("  ")
 
-        # Sender with appropriate color
-        if outgoing:
-            self.messages_text.insert(tk.END, f"@{sender} ", "sender_you")
+        # Sender
+        fmt = QTextCharFormat()
+        if sender.startswith("you→"):
+            fmt.setForeground(QColor("#4ec9b0"))
         elif sender == "claude":
-            self.messages_text.insert(tk.END, f"@{sender} ", "sender_claude")
+            fmt.setForeground(QColor("#c586c0"))
         elif via_relay:
-            self.messages_text.insert(tk.END, f"@{sender} ", "sender_relay")
+            fmt.setForeground(QColor("#dcdcaa"))
         else:
-            self.messages_text.insert(tk.END, f"@{sender} ", "sender")
+            fmt.setForeground(QColor("#569cd6"))
+        fmt.setFontWeight(700)
+        cursor.insertText(f"@{sender} ", fmt)
 
-        # Timestamp and relay indicator
+        # Time
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor("#666666"))
         relay_marker = " ↗" if via_relay else ""
-        self.messages_text.insert(tk.END, f"{time_str}{relay_marker}\n", "time")
+        cursor.insertText(f"{time_str}{relay_marker}\n", fmt)
 
-        # Priority indicator
+        # Priority
         if priority == "high":
-            self.messages_text.insert(tk.END, "  [!] ", "priority_high")
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor("#f48771"))
+            cursor.insertText("  [!] ", fmt)
         else:
-            self.messages_text.insert(tk.END, "  ")
+            cursor.insertText("  ")
 
-        # Message text (truncate if too long)
+        # Message text
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor("#d4d4d4"))
         display_text = text[:200] + "..." if len(text) > 200 else text
-        self.messages_text.insert(tk.END, f"{display_text}\n\n", "message_text")
+        cursor.insertText(f"{display_text}\n\n", fmt)
 
         # Scroll to bottom
-        self.messages_text.see(tk.END)
-        self.messages_text.config(state=tk.DISABLED)
+        self.messages_area.setTextCursor(cursor)
+        self.messages_area.ensureCursorVisible()
 
-        # Notify if unread
+        # Notify
         if unread:
             self._notify(sender, text)
 
     def _notify(self, sender: str, text: str):
-        """Send system notification and flash window."""
-        # Flash window
-        self.root.attributes("-alpha", 1.0)
-        self.root.after(100, lambda: self.root.attributes("-alpha", 0.95))
-        self.root.after(200, lambda: self.root.attributes("-alpha", 1.0))
-        self.root.after(300, lambda: self.root.attributes("-alpha", 0.95))
+        """Send notification."""
+        self.raise_()
+        self.activateWindow()
 
-        # Bring to front
-        self.root.lift()
-        self.root.attributes("-topmost", True)
-
-        # System notification sound (macOS)
+        # macOS notification
         if sys.platform == "darwin":
-            try:
-                subprocess.Popen(
-                    ["afplay", "/System/Library/Sounds/Ping.aiff"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            except:
-                pass
-
-        # macOS notification center
-        if sys.platform == "darwin":
+            import subprocess
             try:
                 preview = text[:50] + "..." if len(text) > 50 else text
                 script = f'display notification "{preview}" with title "Datacore" subtitle "@{sender}"'
-                subprocess.Popen(
-                    ["osascript", "-e", script],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+                subprocess.Popen(["osascript", "-e", script],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.Popen(["afplay", "/System/Library/Sounds/Ping.aiff"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except:
                 pass
 
-    def _send_message(self, event=None):
-        """Send message from input field."""
-        text = self.input_field.get().strip()
+    def update_relay_status(self, status: str):
+        """Update relay status label."""
+        if "●" in status:
+            self.relay_label.setStyleSheet("color: #4ec9b0; font-size: 11px;")
+        elif "failed" in status or "error" in status:
+            self.relay_label.setStyleSheet("color: #f48771; font-size: 11px;")
+        else:
+            self.relay_label.setStyleSheet("color: #c586c0; font-size: 11px;")
+        self.relay_label.setText(f"({status})")
 
-        # Validate input
-        if not text or text == "@user message":
+    def update_presence(self, online_users: list):
+        """Update online users count."""
+        count = len(online_users)
+        self.online_label.setText(f"{count} online" if count > 0 else "")
+
+    def _send_message(self):
+        """Send message from input field."""
+        text = self.input_field.text().strip()
+
+        if not text:
             return
 
         if not text.startswith("@"):
             self._show_error("Start with @username")
             return
 
-        # Parse recipient and message
         parts = text.split(" ", 1)
-        recipient = parts[0][1:]  # Remove @
+        recipient = parts[0][1:]
         msg_text = parts[1] if len(parts) > 1 else ""
 
         if not recipient:
@@ -502,56 +461,48 @@ class MessageWindow:
             self._show_error("Enter a message")
             return
 
-        # Write to inbox
         msg_id = self._write_to_inbox(recipient, msg_text)
 
         if msg_id:
-            # Try sending via relay if connected
             via_relay = False
             if self.relay_connected and self.relay_client:
-                # Send via relay in background
                 def send_relay():
                     asyncio.run(self.relay_client.send_message(recipient, msg_text, msg_id))
                 threading.Thread(target=send_relay, daemon=True).start()
                 via_relay = True
 
-            # Show in UI
             self.add_message(
                 f"you→{recipient}",
                 msg_text,
                 datetime.now().strftime("%H:%M"),
                 unread=False,
-                outgoing=True,
                 via_relay=via_relay,
             )
 
-            # Clear input
-            self.input_field.delete(0, tk.END)
+            self.input_field.clear()
 
-            # Update status
             delivery = "relay" if via_relay else "local"
-            self.status_label.config(text=f"✓ Sent to @{recipient} ({delivery})")
-            self.root.after(3000, lambda: self.status_label.config(text=f"Space: {self.default_space}"))
+            self.status_label.setText(f"✓ Sent to @{recipient} ({delivery})")
+            QTimer.singleShot(3000, lambda: self.status_label.setText(f"Space: {self.default_space}"))
         else:
             self._show_error("Failed to send")
 
     def _show_error(self, msg: str):
         """Show error in status bar."""
-        self.status_label.config(text=f"⚠ {msg}", fg="#f48771")
-        self.root.after(3000, lambda: self.status_label.config(
-            text=f"Space: {self.default_space}",
-            fg=self.muted_color
+        self.status_label.setStyleSheet("color: #f48771; font-size: 11px;")
+        self.status_label.setText(f"⚠ {msg}")
+        QTimer.singleShot(3000, lambda: (
+            self.status_label.setStyleSheet("color: #666666; font-size: 11px;"),
+            self.status_label.setText(f"Space: {self.default_space}")
         ))
 
-    def _write_to_inbox(self, to: str, text: str) -> str | None:
-        """Write message to recipient's org inbox. Returns message ID."""
+    def _write_to_inbox(self, to: str, text: str) -> str:
+        """Write message to recipient's org inbox."""
         try:
-            # Find or create inbox
             inbox_dir = DATACORE_ROOT / self.default_space / "org/inboxes"
             inbox_dir.mkdir(parents=True, exist_ok=True)
             inbox = inbox_dir / f"{to}.org"
 
-            # Generate message
             now = datetime.now()
             msg_id = f"msg-{now.strftime('%Y%m%d-%H%M%S')}-{self.username}"
             timestamp = now.strftime("[%Y-%m-%d %a %H:%M]")
@@ -567,7 +518,6 @@ class MessageWindow:
 {text}
 """
 
-            # Append to file
             with open(inbox, "a") as f:
                 f.write(entry)
 
@@ -578,52 +528,21 @@ class MessageWindow:
             print(f"Error writing message: {e}", file=sys.stderr)
             return None
 
-    def _write_from_relay(self, from_user: str, text: str, priority: str = "normal") -> str | None:
-        """Write message received from relay to local inbox."""
-        try:
-            inbox_dir = DATACORE_ROOT / self.default_space / "org/inboxes"
-            inbox_dir.mkdir(parents=True, exist_ok=True)
-            inbox = inbox_dir / f"{self.username}.org"
-
-            now = datetime.now()
-            msg_id = f"msg-{now.strftime('%Y%m%d-%H%M%S')}-{from_user}"
-            timestamp = now.strftime("[%Y-%m-%d %a %H:%M]")
-
-            entry = f"""
-* MESSAGE {timestamp} :unread:
-:PROPERTIES:
-:ID: {msg_id}
-:FROM: {from_user}
-:TO: {self.username}
-:PRIORITY: {priority}
-:SOURCE: relay
-:END:
-{text}
-"""
-
-            with open(inbox, "a") as f:
-                f.write(entry)
-
-            return msg_id
-
-        except Exception as e:
-            print(f"Error writing relay message: {e}", file=sys.stderr)
-            return None
-
     def _load_existing_messages(self):
         """Load last N messages from inbox on startup."""
         messages = []
 
         for inbox in DATACORE_ROOT.glob(f"*/org/inboxes/{self.username}.org"):
-            content = inbox.read_text()
+            try:
+                content = inbox.read_text()
+                for block in content.split("\n* MESSAGE ")[1:]:
+                    msg = self._parse_message_block(block)
+                    if msg:
+                        self.seen_ids.add(msg["id"])
+                        messages.append(msg)
+            except:
+                pass
 
-            for block in content.split("\n* MESSAGE ")[1:]:
-                msg = self._parse_message_block(block)
-                if msg:
-                    self.seen_ids.add(msg["id"])
-                    messages.append(msg)
-
-        # Sort by time and show last 15
         messages.sort(key=lambda m: m.get("id", ""))
         for msg in messages[-15:]:
             self.add_message(
@@ -642,15 +561,13 @@ class MessageWindow:
 
             is_unread = ":unread:" in header
 
-            # Extract timestamp from header
             time_str = "earlier"
             if "[" in header and "]" in header:
                 ts = header[header.find("[")+1:header.find("]")]
                 parts = ts.split(" ")
                 if len(parts) >= 4:
-                    time_str = parts[3]  # HH:MM
+                    time_str = parts[3]
 
-            # Parse properties
             props = {}
             text_lines = []
             in_props = False
@@ -661,7 +578,6 @@ class MessageWindow:
                 elif ":END:" in line:
                     in_props = False
                 elif in_props and ": " in line:
-                    # Parse property line like ":FROM: gregor"
                     line = line.strip()
                     if line.startswith(":") and ": " in line[1:]:
                         key_val = line[1:].split(": ", 1)
@@ -680,150 +596,96 @@ class MessageWindow:
                 "priority": props.get("priority", "normal"),
                 "source": props.get("source", "local"),
             }
-        except Exception as e:
-            print(f"Error parsing message: {e}", file=sys.stderr)
+        except:
             return None
 
     def _start_watcher(self):
-        """Start background thread to watch for new messages."""
-        self.watcher_thread = threading.Thread(target=self._watch_inbox, daemon=True)
-        self.watcher_thread.start()
+        """Start timer to watch for new messages."""
+        self.watcher_timer = QTimer(self)
+        self.watcher_timer.timeout.connect(self._check_inbox)
+        self.watcher_timer.start(POLL_INTERVAL)
 
-    def _watch_inbox(self):
-        """Watch inbox files for new messages."""
-        import time
+    def _check_inbox(self):
+        """Check inbox for new messages."""
+        try:
+            for inbox in DATACORE_ROOT.glob(f"*/org/inboxes/{self.username}.org"):
+                content = inbox.read_text()
 
-        while True:
-            time.sleep(POLL_INTERVAL)
+                for block in content.split("\n* MESSAGE ")[1:]:
+                    msg = self._parse_message_block(block)
 
-            try:
-                for inbox in DATACORE_ROOT.glob(f"*/org/inboxes/{self.username}.org"):
-                    content = inbox.read_text()
-
-                    for block in content.split("\n* MESSAGE ")[1:]:
-                        msg = self._parse_message_block(block)
-
-                        if msg and msg["id"] and msg["id"] not in self.seen_ids:
-                            self.seen_ids.add(msg["id"])
-
-                            # Schedule UI update on main thread
-                            self.root.after(0, lambda m=msg: self.add_message(
-                                m["from"],
-                                m["text"],
-                                m.get("time", "now"),
-                                unread=m.get("unread", True),
-                                priority=m.get("priority", "normal"),
-                                via_relay=m.get("source") == "relay",
-                            ))
-            except Exception as e:
-                print(f"Watcher error: {e}", file=sys.stderr)
+                    if msg and msg["id"] and msg["id"] not in self.seen_ids:
+                        self.seen_ids.add(msg["id"])
+                        self.add_message(
+                            msg["from"],
+                            msg["text"],
+                            msg.get("time", "now"),
+                            unread=msg.get("unread", True),
+                            priority=msg.get("priority", "normal"),
+                            via_relay=msg.get("source") == "relay",
+                        )
+        except Exception as e:
+            print(f"Watcher error: {e}", file=sys.stderr)
 
     def _start_relay(self):
         """Start relay connection if enabled."""
         if not HAS_WEBSOCKETS:
-            self.relay_indicator.config(text="(no websockets)")
+            self.relay_label.setText("(no websockets)")
             return
 
         if not is_relay_enabled():
-            self.relay_indicator.config(text="(local only)")
+            self.relay_label.setText("(local only)")
             return
 
         secret = get_relay_secret()
         if not secret:
-            self.relay_indicator.config(text="(no secret)")
+            self.relay_label.setText("(no secret)")
             return
 
-        # Start relay in background thread
-        self.relay_thread = threading.Thread(target=self._relay_loop, daemon=True)
-        self.relay_thread.start()
+        thread = threading.Thread(target=self._relay_loop, daemon=True)
+        thread.start()
 
     def _relay_loop(self):
         """Run relay client in background."""
         async def run_relay():
-            def on_message(data):
-                """Handle incoming relay message."""
-                from_user = data.get("from", "?")
-                text = data.get("text", "")
-                priority = data.get("priority", "normal")
-
-                # Write to local inbox
-                msg_id = self._write_from_relay(from_user, text, priority)
-
-                if msg_id and msg_id not in self.seen_ids:
-                    self.seen_ids.add(msg_id)
-
-                    # Update UI
-                    self.root.after(0, lambda: self.add_message(
-                        from_user,
-                        text,
-                        datetime.now().strftime("%H:%M"),
-                        unread=True,
-                        priority=priority,
-                        via_relay=True,
-                    ))
-
-            def on_presence(online_users):
-                """Handle presence update."""
-                count = len(online_users)
-                self.root.after(0, lambda: self.online_label.config(
-                    text=f"{count} online" if count > 0 else ""
-                ))
-
-            def on_status(status):
-                """Handle status update."""
-                self.root.after(0, lambda: self.relay_indicator.config(text=f"({status[:20]})"))
-
             self.relay_client = RelayClient(
                 get_relay_url(),
                 get_relay_secret(),
                 self.username,
-                on_message=on_message,
-                on_presence=on_presence,
-                on_status=on_status,
+                self.bridge,
+                get_claude_whitelist(),
             )
 
             if await self.relay_client.connect():
                 self.relay_connected = True
-                self.root.after(0, lambda: self.relay_indicator.config(
-                    text="● relay",
-                    fg=self.online_color
-                ))
                 await self.relay_client.listen()
             else:
                 self.relay_connected = False
-                self.root.after(0, lambda: self.relay_indicator.config(
-                    text="(relay failed)",
-                    fg="#f48771"
-                ))
 
         asyncio.run(run_relay())
 
-    def run(self):
-        """Start the application."""
-        print(f"Datacore Messages - @{self.username}")
-        print(f"Watching: {DATACORE_ROOT}/*/org/inboxes/{self.username}.org")
-        if is_relay_enabled():
-            print(f"Relay: {get_relay_url()}")
-        print("Window opened. Press Cmd+W or Escape to minimize.")
-        self.root.mainloop()
-
 
 def main():
-    """Entry point."""
-    # Check for help
     if len(sys.argv) > 1 and sys.argv[1] in ["-h", "--help"]:
         print(__doc__)
         sys.exit(0)
 
-    # Ensure DATACORE_ROOT exists
     if not DATACORE_ROOT.exists():
         print(f"Error: DATACORE_ROOT not found: {DATACORE_ROOT}", file=sys.stderr)
-        print("Set DATACORE_ROOT environment variable or ensure ~/Data exists.", file=sys.stderr)
         sys.exit(1)
 
-    # Create and run app
-    app = MessageWindow()
-    app.run()
+    app = QApplication(sys.argv)
+    app.setApplicationName("Datacore Messages")
+
+    window = MessageWindow()
+    window.show()
+
+    print(f"Datacore Messages - @{window.username}")
+    print(f"Watching: {DATACORE_ROOT}/*/org/inboxes/{window.username}.org")
+    if is_relay_enabled():
+        print(f"Relay: {get_relay_url()}")
+
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

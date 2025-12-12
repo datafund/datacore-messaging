@@ -12,14 +12,24 @@ Inter-user messaging for Datacore via shared space inboxes.
 - **Git-based delivery**: Messages sync via existing `./sync` workflow
 - **Real-time UI**: Floating window shows messages as they arrive
 - **Terminal CLI**: Pure terminal messaging with socket notifications
-- **Internet relay**: Connect remote users via WebSocket relay with GitHub OAuth
+- **Internet relay**: Connect remote users via WebSocket relay with shared secret
+- **Namespaced agents**: `@tex-claude`, `@gregor-claude` for per-user AI agents
 
 ## Installation
 
 ```bash
 cd ~/Data/.datacore/modules
 git clone https://github.com/datafund/datacore-messaging.git messaging
+cd messaging
+./install.sh
 ```
+
+The installer will:
+- Install Python dependencies (PyQt6, websockets, pyyaml, aiohttp)
+- Create `settings.local.yaml` from template
+- Add Claude Code hook to `~/.claude/settings.json`
+
+After install, edit `settings.local.yaml` with your username and relay secret.
 
 ## Configuration
 
@@ -35,7 +45,7 @@ messaging:
   show_in_today: true              # Include unread count in /today briefing
   relay:
     secret: "your-team-shared-secret"    # Shared secret (same for all team members)
-    url: "wss://datacore-relay.fly.dev"  # Relay server URL (optional)
+    url: "wss://datacore-messaging-relay.datafund.io"  # Relay server URL (optional)
 ```
 
 ## Usage
@@ -114,7 +124,7 @@ datacore-msg connect    # Connect to relay in interactive mode
 
 Interactive mode:
 ```
-datacore-msg | @gregor (relay: wss://datacore-relay.fly.dev)
+datacore-msg | @gregor (relay: wss://datacore-messaging-relay.datafund.io)
 Online: @crt, @claude, @gregor
 Commands: @user msg | /read | /peers | /local | /quit
 
@@ -199,7 +209,7 @@ The relay server enables messaging between users on different machines over the 
    messaging:
      relay:
        secret: "your-shared-secret"  # Same secret for everyone
-       url: "wss://datacore-relay.fly.dev"
+       url: "wss://datacore-messaging-relay.datafund.io"
    ```
 
 4. **Connect**
@@ -347,34 +357,77 @@ Messages to `@claude` are tagged `:AI:` and processed by `ai-task-executor`:
 # → Result sent back to your inbox
 ```
 
-### Claude Code Session
+### Claude Code Hook Integration
 
-When running `datacore-msg daemon` as claude, messages are forwarded to:
-```
-/tmp/datacore-claude.pipe
+Install the inbox watcher hook to receive messages directly in Claude Code sessions:
+
+**1. Add to `~/.claude/settings.json` or `.claude/settings.local.json`:**
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/datacore-messaging/hooks/inbox-watcher.py"
+          }
+        ]
+      }
+    ]
+  }
+}
 ```
 
-Claude Code can read this pipe to receive messages in real-time.
+**2. How it works:**
+- Hook runs before each user prompt
+- Checks `<user>-claude.org` inbox for unread messages
+- Injects new messages into Claude's context
+- Tracks seen messages to avoid duplicates
+
+**3. Send replies from Claude:**
+
+```bash
+# Claude can reply using the send-reply script
+./hooks/send-reply.py tex "Task completed!"
+```
+
+### User Naming Convention
+
+Each user has a personal Claude agent with namespaced identity:
+
+| User | Human Identity | Claude Agent |
+|------|----------------|--------------|
+| tex | `@tex` | `@tex-claude` |
+| gregor | `@gregor` | `@gregor-claude` |
+
+This prevents conflicts when multiple users run Claude agents simultaneously.
 
 ## Files
 
 ```
 lib/
 ├── datacore-msg           # Terminal CLI (Python)
-├── datacore-msg-window.py # Floating GUI window (Tkinter)
+├── datacore-msg-window.py # Floating GUI window (PyQt6)
 └── datacore-msg-relay.py  # WebSocket relay server (aiohttp)
+
+hooks/
+├── inbox-watcher.py       # Claude Code hook for receiving messages
+└── send-reply.py          # Helper script for Claude to send replies
 
 fly.toml                   # fly.io deployment config
 requirements.txt           # Python dependencies
-Procfile                   # Process definition for deployment
+settings.local.yaml.example # Example settings
 ```
 
 ## Requirements
 
 **Client (CLI/GUI):**
 - Python 3.8+
-- tkinter (included with Python, for GUI window)
-- websockets (optional, for relay): `pip install websockets`
+- PyQt6 (for GUI window): `pip install PyQt6`
+- websockets (for relay): `pip install websockets`
+- pyyaml (for settings): `pip install pyyaml`
 
 **Relay Server:**
 - Python 3.8+

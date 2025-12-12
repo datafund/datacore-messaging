@@ -108,7 +108,7 @@ def get_relay_url() -> str:
     return conf.get("messaging", {}).get("relay", {}).get("url", DEFAULT_RELAY)
 
 
-def get_relay_secret() -> str | None:
+def get_relay_secret() -> str:
     """Get relay shared secret from settings."""
     conf = get_settings()
     return conf.get("messaging", {}).get("relay", {}).get("secret")
