@@ -70,18 +70,17 @@ Type in the input field:
 |---------|-------------|
 | `/mine` | Show my unread messages |
 | `/todos` | Show my TODO messages |
-| `/mark <id> todo` | Mark a message as TODO |
-| `/mark <id> done` | Mark a message as done |
-| `/mark <id> clear` | Remove TODO/done status |
+| `/todo <id>` | Mark a message as TODO |
+| `/done <id>` | Mark a message as done |
 | `/online` | Show online users |
 | `/clear` | Clear message display |
 | `/help` | Show available commands |
 
 **Message workflow:**
-1. Receive a message → shows as unread (●)
-2. `/mark <id> todo` → add to your TODO list (☐)
-3. `/mark <id> done` → mark as completed
-4. `/todo` → see all pending TODOs
+1. `/mine` → see unread messages with IDs like `[151230]`
+2. `/todo 151230` → add to your TODO list
+3. `/todos` → see all pending TODOs
+4. `/done 151230` → mark as completed
 
 ### GUI Features
 

@@ -439,14 +439,16 @@ class MessageWindow(QMainWindow):
         if cmd_name in ("/mine", "/my-messages", "/messages", "/inbox"):
             self._show_my_messages()
             return True
-        elif cmd_name in ("/todos", "/todo"):
+        elif cmd_name == "/todos":
             self._show_todo_messages()
             return True
-        elif cmd_name == "/mark" and len(parts) >= 2:
-            # /mark <id> [todo|done|clear]
-            msg_id = parts[1]
-            action = parts[2].lower() if len(parts) > 2 else "todo"
-            self._mark_message(msg_id, action)
+        elif cmd_name == "/todo" and len(parts) >= 2:
+            # /todo <id> - mark as TODO
+            self._mark_message(parts[1], "todo")
+            return True
+        elif cmd_name == "/done" and len(parts) >= 2:
+            # /done <id> - mark as done
+            self._mark_message(parts[1], "done")
             return True
         elif cmd_name == "/clear":
             self.messages_area.clear()
@@ -500,9 +502,19 @@ class MessageWindow(QMainWindow):
 
         if messages:
             for msg in sorted(messages, key=lambda m: m.get("id", "")):
+                # Get short ID (number part, e.g., "151230" from "msg-20251212-151230-tex")
+                msg_id = msg.get("id", "")
+                id_parts = msg_id.split("-")
+                short_id = id_parts[2] if len(id_parts) >= 3 else msg_id[-6:]
+
                 fmt = QTextCharFormat()
                 fmt.setForeground(QColor("#f48771"))
                 cursor.insertText("● ", fmt)
+
+                # Show short ID in brackets
+                fmt = QTextCharFormat()
+                fmt.setForeground(QColor("#666"))
+                cursor.insertText(f"[{short_id}] ", fmt)
 
                 fmt = QTextCharFormat()
                 fmt.setForeground(QColor("#569cd6"))
@@ -521,6 +533,11 @@ class MessageWindow(QMainWindow):
                 fmt = QTextCharFormat()
                 fmt.setForeground(QColor("#d4d4d4"))
                 cursor.insertText(f"  {msg['text'][:150]}\n", fmt)
+
+                # Show command hint
+                fmt = QTextCharFormat()
+                fmt.setForeground(QColor("#555"))
+                cursor.insertText(f"  /todo {short_id}\n", fmt)
         else:
             fmt = QTextCharFormat()
             fmt.setForeground(QColor("#4ec9b0"))
@@ -549,8 +566,8 @@ class MessageWindow(QMainWindow):
             ("@claude task", "Send task to your Claude"),
             ("/mine", "Show my unread messages"),
             ("/todos", "Show my TODO messages"),
-            ("/mark <id> todo", "Mark message as TODO"),
-            ("/mark <id> done", "Mark message as done"),
+            ("/todo <id>", "Mark message as TODO"),
+            ("/done <id>", "Mark message as done"),
             ("/online", "Show online users"),
             ("/clear", "Clear message area"),
             ("/help", "Show this help"),
@@ -641,9 +658,19 @@ class MessageWindow(QMainWindow):
 
         if todo_msgs:
             for msg in sorted(todo_msgs, key=lambda m: m.get("id", "")):
+                # Get short ID (number part)
+                msg_id = msg.get("id", "")
+                id_parts = msg_id.split("-")
+                short_id = id_parts[2] if len(id_parts) >= 3 else msg_id[-6:]
+
                 fmt = QTextCharFormat()
                 fmt.setForeground(QColor("#dcdcaa"))
                 cursor.insertText("☐ ", fmt)
+
+                # Show short ID in brackets
+                fmt = QTextCharFormat()
+                fmt.setForeground(QColor("#666"))
+                cursor.insertText(f"[{short_id}] ", fmt)
 
                 fmt = QTextCharFormat()
                 fmt.setForeground(QColor("#569cd6"))
@@ -663,11 +690,10 @@ class MessageWindow(QMainWindow):
                 fmt.setForeground(QColor("#d4d4d4"))
                 cursor.insertText(f"  {msg['text'][:120]}\n", fmt)
 
-                # Show short ID for marking
-                short_id = msg['id'].split('-')[-1] if msg['id'] else ""
+                # Show command hint
                 fmt = QTextCharFormat()
-                fmt.setForeground(QColor("#666"))
-                cursor.insertText(f"  /mark {short_id} done\n", fmt)
+                fmt.setForeground(QColor("#555"))
+                cursor.insertText(f"  /done {short_id}\n", fmt)
         else:
             fmt = QTextCharFormat()
             fmt.setForeground(QColor("#4ec9b0"))
