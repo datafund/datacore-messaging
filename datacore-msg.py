@@ -436,10 +436,10 @@ class MessageWindow(QMainWindow):
         parts = cmd.strip().split(maxsplit=2)
         cmd_name = parts[0].lower()
 
-        if cmd_name in ("/my-messages", "/messages", "/inbox"):
+        if cmd_name in ("/mine", "/my-messages", "/messages", "/inbox"):
             self._show_my_messages()
             return True
-        elif cmd_name == "/todo":
+        elif cmd_name in ("/todos", "/todo"):
             self._show_todo_messages()
             return True
         elif cmd_name == "/mark" and len(parts) >= 2:
@@ -547,8 +547,8 @@ class MessageWindow(QMainWindow):
         commands = [
             ("@user message", "Send message to user"),
             ("@claude task", "Send task to your Claude"),
-            ("/my-messages", "Show unread messages"),
-            ("/todo", "Show TODO messages"),
+            ("/mine", "Show my unread messages"),
+            ("/todos", "Show my TODO messages"),
             ("/mark <id> todo", "Mark message as TODO"),
             ("/mark <id> done", "Mark message as done"),
             ("/online", "Show online users"),

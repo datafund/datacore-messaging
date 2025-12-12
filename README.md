@@ -68,8 +68,8 @@ Type in the input field:
 
 | Command | Description |
 |---------|-------------|
-| `/my-messages` | Show all unread messages |
-| `/todo` | Show messages marked as TODO |
+| `/mine` | Show my unread messages |
+| `/todos` | Show my TODO messages |
 | `/mark <id> todo` | Mark a message as TODO |
 | `/mark <id> done` | Mark a message as done |
 | `/mark <id> clear` | Remove TODO/done status |
