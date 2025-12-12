@@ -2,6 +2,13 @@
 
 The relay server is a simple Python WebSocket server. Deploy it anywhere.
 
+## Protocol Options
+
+| Protocol | Use Case | SSL Required |
+|----------|----------|--------------|
+| `ws://` | LAN, internal servers, testing | No |
+| `wss://` | Public internet, production | Yes (nginx + certbot) |
+
 **Recommended: Use the Docker setup in `relay/` folder.**
 
 ## Docker Deploy (Recommended)
@@ -12,7 +19,9 @@ echo "RELAY_SECRET=your-team-secret" > .env
 docker-compose up -d --build
 ```
 
-See `relay/README.md` for full instructions including nginx/SSL setup.
+This runs the relay on port 8080. Clients connect with `ws://your-server:8080/ws`.
+
+For `wss://` (SSL), see `relay/README.md` for nginx reverse proxy setup.
 
 ---
 
@@ -86,7 +95,23 @@ sudo systemctl start datacore-relay
 sudo systemctl status datacore-relay
 ```
 
-### 5. Set up nginx reverse proxy (for wss://)
+### 5. Test (ws:// - no SSL)
+
+At this point the relay is running. Test it:
+
+```bash
+# Check status
+curl http://your-server:8080/status
+
+# Should return:
+# {"status": "ok", "users_online": 0, "users": []}
+```
+
+Clients connect with `ws://your-server:8080/ws`.
+
+### 6. (Optional) Add SSL for wss://
+
+If you need `wss://` for public internet access, set up nginx reverse proxy:
 
 Create `/etc/nginx/sites-available/datacore-relay`:
 
@@ -127,15 +152,12 @@ sudo certbot --nginx -d datacore-relay.datafund.io
 sudo systemctl reload nginx
 ```
 
-### 6. Test
-
+Test with SSL:
 ```bash
-# Check status
 curl https://datacore-relay.datafund.io/status
-
-# Should return:
-# {"status": "ok", "users_online": 0, "users": []}
 ```
+
+Clients now connect with `wss://datacore-relay.datafund.io/ws`.
 
 ## Client Configuration
 
@@ -145,7 +167,9 @@ Once deployed, team members configure `settings.local.yaml`:
 messaging:
   relay:
     secret: "your-shared-secret"
-    url: "wss://datacore-relay.datafund.io/ws"
+    # Use ws:// for LAN/internal, wss:// for public with SSL
+    url: "ws://your-server:8080/ws"            # No SSL
+    # url: "wss://relay.example.com/ws"        # With SSL
 ```
 
 ## Docker Deploy (Alternative)

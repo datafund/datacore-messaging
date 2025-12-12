@@ -49,34 +49,49 @@ read -p "   Claude whitelist: " WHITELIST_INPUT
 # Get relay URL
 echo ""
 echo "   Relay server - how will your team connect?"
-echo "   1) Datafund relay (wss://datacore-messaging-relay.datafund.io)"
-echo "   2) Local only (testing on this machine)"
-echo "   3) I'm hosting for the team (LAN)"
-echo "   4) Custom relay URL"
-read -p "   Choice [1]: " RELAY_CHOICE
+echo ""
+echo "   ws:// options (no SSL - for LAN/internal use):"
+echo "   1) Local only - ws://localhost:8080/ws (testing on this machine)"
+echo "   2) LAN host - ws://<your-ip>:8080/ws (you host for team)"
+echo "   3) Custom ws:// URL (internal server)"
+echo ""
+echo "   wss:// options (with SSL - for public internet):"
+echo "   4) Datafund relay - wss://datacore-messaging-relay.datafund.io/ws"
+echo "   5) Custom wss:// URL (your own SSL relay)"
+echo ""
+read -p "   Choice [4]: " RELAY_CHOICE
 
 case "$RELAY_CHOICE" in
-    2)
+    1)
         RELAY_URL="ws://localhost:8080/ws"
         RELAY_HOST="true"
+        echo "   → Local testing mode, you'll host the relay"
         ;;
-    3)
+    2)
         LOCAL_IP=$(ipconfig getifaddr en0 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')
         echo ""
-        echo "   Your teammates should use: ws://$LOCAL_IP:8080/ws"
+        echo "   Your LAN IP: $LOCAL_IP"
+        echo "   Teammates should use: ws://$LOCAL_IP:8080/ws"
         RELAY_URL="ws://0.0.0.0:8080/ws"
         RELAY_HOST="true"
         ;;
-    4)
+    3)
+        echo ""
+        echo "   Enter ws:// URL (e.g., ws://192.168.1.100:8080/ws)"
+        read -p "   Relay URL: " RELAY_URL
+        RELAY_HOST="false"
+        ;;
+    5)
+        echo ""
+        echo "   Enter wss:// URL (e.g., wss://relay.yourcompany.com/ws)"
         read -p "   Relay URL: " RELAY_URL
         RELAY_HOST="false"
         ;;
     *)
-        # Default: Datafund relay
+        # Default: Datafund relay (wss://)
         RELAY_URL="wss://datacore-messaging-relay.datafund.io/ws"
         RELAY_HOST="false"
-        echo ""
-        echo "   Using Datafund relay: $RELAY_URL"
+        echo "   → Using Datafund public relay (wss://)"
         ;;
 esac
 

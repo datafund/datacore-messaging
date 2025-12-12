@@ -16,9 +16,11 @@ docker-compose up -d
 curl http://localhost:8080/status
 ```
 
-## Deploy to Server
+## Deploy Options
 
-### On datacore-messaging-relay.datafund.io:
+### Option A: Simple Deploy (ws://) - No SSL
+
+Best for: LAN, internal servers, testing.
 
 ```bash
 # Clone or copy relay folder
@@ -35,7 +37,18 @@ docker-compose up -d --build
 docker-compose logs -f
 ```
 
-### Set up nginx reverse proxy (for wss://):
+Clients connect with:
+```yaml
+relay:
+  url: "ws://your-server:8080/ws"
+```
+
+### Option B: Production Deploy (wss://) - With SSL
+
+Best for: Public internet, production use.
+
+1. Deploy the relay (same as Option A)
+2. Set up nginx reverse proxy with SSL:
 
 ```nginx
 server {
@@ -63,9 +76,15 @@ server {
 }
 ```
 
-Get SSL certificate:
+3. Get SSL certificate:
 ```bash
 sudo certbot --nginx -d datacore-messaging-relay.datafund.io
+```
+
+Clients connect with:
+```yaml
+relay:
+  url: "wss://datacore-messaging-relay.datafund.io/ws"
 ```
 
 ## Environment Variables
@@ -86,12 +105,22 @@ sudo certbot --nginx -d datacore-messaging-relay.datafund.io
 ## Test Connection
 
 ```bash
-# HTTP status
+# HTTP status (ws:// deploy)
+curl http://your-server:8080/status
+
+# HTTP status (wss:// deploy)
 curl https://datacore-messaging-relay.datafund.io/status
 
 # WebSocket test (requires wscat)
 npm install -g wscat
+
+# For ws:// (no SSL)
+wscat -c ws://your-server:8080/ws
+
+# For wss:// (with SSL)
 wscat -c wss://datacore-messaging-relay.datafund.io/ws
+
+# Then authenticate:
 > {"type":"auth","secret":"your-secret","username":"test"}
 ```
 
@@ -103,7 +132,9 @@ Team members add to their `settings.local.yaml`:
 messaging:
   relay:
     secret: "your-team-secret"
-    url: "wss://datacore-messaging-relay.datafund.io/ws"
+    # Use ws:// for LAN/internal, wss:// for public internet
+    url: "ws://your-server:8080/ws"           # No SSL
+    # url: "wss://relay.example.com/ws"       # With SSL
 ```
 
 ## Monitoring
