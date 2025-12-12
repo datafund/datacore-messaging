@@ -29,11 +29,11 @@ from typing import Optional
 # PyQt6 for GUI
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTextEdit, QLineEdit, QLabel, QFrame, QScrollArea, QCheckBox,
-    QPushButton, QSizePolicy
+    QTextEdit, QLineEdit, QLabel, QFrame, QScrollArea, QPushButton,
+    QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
-from PyQt6.QtGui import QColor, QTextCursor, QTextCharFormat, QFont
+from PyQt6.QtGui import QColor, QTextCursor, QTextCharFormat
 
 # Optional imports
 try:
@@ -292,64 +292,36 @@ class EmbeddedRelay:
 
 # === GUI ===
 
-class MessageWidget(QFrame):
-    """A clickable message widget with checkbox for TODO tracking."""
+class MessageRow(QFrame):
+    """A message row with status button and delete button."""
+    status_clicked = pyqtSignal(str, str)  # msg_id, current_status
+    delete_clicked = pyqtSignal(str)  # msg_id
 
-    def __init__(self, msg_data: dict, on_status_change=None, parent=None):
+    def __init__(self, msg_data: dict, parent=None):
         super().__init__(parent)
         self.msg_data = msg_data
-        self.on_status_change = on_status_change
+        self.msg_id = msg_data.get("id", "")
 
         self.setStyleSheet("""
-            MessageWidget {
-                background-color: #252526;
-                border-radius: 4px;
-                margin: 2px;
-                padding: 4px;
-            }
-            MessageWidget:hover {
-                background-color: #2d2d2d;
-            }
+            MessageRow { background-color: #252526; border-radius: 4px; margin: 2px 0; }
+            MessageRow:hover { background-color: #2d2d2d; }
         """)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(8)
 
-        # Checkbox for TODO/done
-        self.checkbox = QCheckBox()
-        self.checkbox.setStyleSheet("""
-            QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
-            }
-            QCheckBox::indicator:unchecked {
-                border: 2px solid #666;
-                border-radius: 3px;
-                background: transparent;
-            }
-            QCheckBox::indicator:checked {
-                border: 2px solid #4ec9b0;
-                border-radius: 3px;
-                background: #4ec9b0;
-            }
-        """)
+        # Status button (left side)
+        self.status_btn = QPushButton()
+        self.status_btn.setFixedSize(24, 24)
+        self.status_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.status_btn.clicked.connect(self._on_status_click)
+        self._update_status_button()
+        layout.addWidget(self.status_btn)
 
-        # Set checkbox state based on message status
-        if msg_data.get("done"):
-            self.checkbox.setChecked(True)
-        elif msg_data.get("todo"):
-            self.checkbox.setChecked(False)
-        else:
-            # Unread or read - hide checkbox until clicked
-            pass
-
-        self.checkbox.stateChanged.connect(self._on_checkbox_changed)
-        layout.addWidget(self.checkbox)
-
-        # Message content
-        content_layout = QVBoxLayout()
-        content_layout.setSpacing(2)
+        # Message content (middle)
+        content = QVBoxLayout()
+        content.setSpacing(2)
 
         # Header: sender + time
         header = QHBoxLayout()
@@ -370,50 +342,88 @@ class MessageWidget(QFrame):
         time_label.setStyleSheet("color: #666; font-size: 11px;")
         header.addWidget(time_label)
 
-        # Status indicator
-        if msg_data.get("unread"):
-            status = QLabel("●")
-            status.setStyleSheet("color: #f48771; font-size: 10px;")
-            header.addWidget(status)
-        elif msg_data.get("todo"):
-            status = QLabel("☐")
-            status.setStyleSheet("color: #dcdcaa; font-size: 12px;")
-            header.addWidget(status)
-        elif msg_data.get("done"):
-            status = QLabel("✓")
-            status.setStyleSheet("color: #4ec9b0; font-size: 12px;")
-            header.addWidget(status)
-
-        content_layout.addLayout(header)
+        content.addLayout(header)
 
         # Message text
-        text = msg_data.get("text", "")[:200]
+        text = msg_data.get("text", "")[:150]
         text_label = QLabel(text)
         text_label.setWordWrap(True)
         text_label.setStyleSheet("color: #d4d4d4; font-size: 12px;")
-        content_layout.addWidget(text_label)
+        content.addWidget(text_label)
 
-        layout.addLayout(content_layout, stretch=1)
+        layout.addLayout(content, stretch=1)
 
-    def _on_checkbox_changed(self, state):
-        if self.on_status_change:
-            if state == 2:  # Checked
-                self.on_status_change(self.msg_data, "done")
-            else:
-                self.on_status_change(self.msg_data, "todo")
+        # Delete button (right side)
+        self.delete_btn = QPushButton("×")
+        self.delete_btn.setFixedSize(24, 24)
+        self.delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.delete_btn.setStyleSheet("""
+            QPushButton { background: transparent; color: #666; font-size: 16px; border: none; }
+            QPushButton:hover { color: #f48771; }
+        """)
+        self.delete_btn.clicked.connect(self._on_delete_click)
+        layout.addWidget(self.delete_btn)
 
-    def mousePressEvent(self, event):
-        """Click on message to cycle: unread → todo → done."""
-        if self.on_status_change:
-            if self.msg_data.get("unread"):
-                self.on_status_change(self.msg_data, "todo")
-            elif self.msg_data.get("todo"):
-                self.on_status_change(self.msg_data, "done")
-            elif self.msg_data.get("done"):
-                self.on_status_change(self.msg_data, "clear")
-            else:
-                self.on_status_change(self.msg_data, "todo")
-        super().mousePressEvent(event)
+    def _update_status_button(self):
+        """Update button appearance based on message status."""
+        if self.msg_data.get("unread"):
+            self.status_btn.setText("●")
+            self.status_btn.setStyleSheet("""
+                QPushButton { background: transparent; color: #f48771; font-size: 16px; border: none; }
+                QPushButton:hover { color: #dcdcaa; }
+            """)
+            self.status_btn.setToolTip("Click to mark as TODO")
+        elif self.msg_data.get("todo"):
+            self.status_btn.setText("☐")
+            self.status_btn.setStyleSheet("""
+                QPushButton { background: transparent; color: #dcdcaa; font-size: 16px; border: none; }
+                QPushButton:hover { color: #4ec9b0; }
+            """)
+            self.status_btn.setToolTip("Click to mark as done")
+        elif self.msg_data.get("done"):
+            self.status_btn.setText("✓")
+            self.status_btn.setStyleSheet("""
+                QPushButton { background: transparent; color: #4ec9b0; font-size: 16px; border: none; }
+                QPushButton:hover { color: #666; }
+            """)
+            self.status_btn.setToolTip("Click to clear")
+        else:
+            self.status_btn.setText("○")
+            self.status_btn.setStyleSheet("""
+                QPushButton { background: transparent; color: #666; font-size: 16px; border: none; }
+                QPushButton:hover { color: #dcdcaa; }
+            """)
+            self.status_btn.setToolTip("Click to mark as TODO")
+
+    def _on_status_click(self):
+        status = "unread" if self.msg_data.get("unread") else \
+                 "todo" if self.msg_data.get("todo") else \
+                 "done" if self.msg_data.get("done") else "read"
+
+        # Cycle visual status immediately
+        self._cycle_status_visual()
+
+        # Emit signal to update the org file
+        self.status_clicked.emit(self.msg_id, status)
+
+    def _cycle_status_visual(self):
+        """Cycle to next status visually."""
+        # Update internal data
+        if self.msg_data.get("unread"):
+            self.msg_data["unread"] = False
+            self.msg_data["todo"] = True
+        elif self.msg_data.get("todo"):
+            self.msg_data["todo"] = False
+            self.msg_data["done"] = True
+        elif self.msg_data.get("done"):
+            self.msg_data["done"] = False
+        else:
+            self.msg_data["todo"] = True
+        # Update button appearance
+        self._update_status_button()
+
+    def _on_delete_click(self):
+        self.delete_clicked.emit(self.msg_id)
 
 
 class SignalBridge(QObject):
@@ -485,30 +495,22 @@ class MessageWindow(QMainWindow):
 
         layout.addLayout(header)
 
-        # Messages scroll area
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setStyleSheet("""
+        # Single scrollable stream - contains both text and message widgets
+        self.stream_scroll = QScrollArea()
+        self.stream_scroll.setWidgetResizable(True)
+        self.stream_scroll.setStyleSheet("""
             QScrollArea { background-color: #1e1e1e; border: none; }
             QScrollBar:vertical { background: #1e1e1e; width: 8px; }
             QScrollBar::handle:vertical { background: #555; border-radius: 4px; }
         """)
-
-        self.messages_container = QWidget()
-        self.messages_layout = QVBoxLayout(self.messages_container)
-        self.messages_layout.setContentsMargins(0, 0, 0, 0)
-        self.messages_layout.setSpacing(4)
-        self.messages_layout.addStretch()  # Push messages to top
-
-        self.scroll_area.setWidget(self.messages_container)
-        layout.addWidget(self.scroll_area, stretch=1)
-
-        # Text area for command output (hidden by default)
-        self.messages_area = QTextEdit()
-        self.messages_area.setReadOnly(True)
-        self.messages_area.setMaximumHeight(100)
-        self.messages_area.hide()
-        layout.addWidget(self.messages_area)
+        self.stream_widget = QWidget()
+        self.stream_widget.setStyleSheet("background-color: #1e1e1e;")
+        self.stream_layout = QVBoxLayout(self.stream_widget)
+        self.stream_layout.setContentsMargins(8, 8, 8, 8)
+        self.stream_layout.setSpacing(4)
+        self.stream_layout.addStretch()
+        self.stream_scroll.setWidget(self.stream_widget)
+        layout.addWidget(self.stream_scroll, stretch=1)
 
         # Separator
         sep = QFrame()
@@ -532,38 +534,70 @@ class MessageWindow(QMainWindow):
         screen = QApplication.primaryScreen().geometry()
         self.move(screen.width() - 370, 40)
 
+    def _add_text_to_stream(self, text: str, color: str = "#d4d4d4", bold: bool = False):
+        """Add a text label to the stream."""
+        label = QLabel(text)
+        style = f"color: {color}; font-size: 12px;"
+        if bold:
+            style += " font-weight: bold;"
+        label.setStyleSheet(style)
+        label.setWordWrap(True)
+        # Insert before the stretch
+        self.stream_layout.insertWidget(self.stream_layout.count() - 1, label)
+        self._scroll_to_bottom()
+
+    def _add_widget_to_stream(self, widget):
+        """Add any widget to the stream."""
+        self.stream_layout.insertWidget(self.stream_layout.count() - 1, widget)
+        self._scroll_to_bottom()
+
+    def _scroll_to_bottom(self):
+        """Scroll stream to bottom."""
+        QTimer.singleShot(10, lambda: self.stream_scroll.verticalScrollBar().setValue(
+            self.stream_scroll.verticalScrollBar().maximum()))
+
     def add_message(self, sender: str, text: str, time_str: str,
                     unread: bool = False, priority: str = "normal", via_relay: bool = False):
-        cursor = self.messages_area.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-
-        if unread:
-            fmt = QTextCharFormat()
-            fmt.setForeground(QColor("#f48771"))
-            cursor.insertText("● ", fmt)
-        else:
-            cursor.insertText("  ")
-
-        fmt = QTextCharFormat()
+        """Add a simple text message to the stream."""
+        # Determine sender color
         if sender.startswith("you→"):
-            fmt.setForeground(QColor("#4ec9b0"))
+            sender_color = "#4ec9b0"
         elif sender == "claude" or sender.endswith("-claude"):
-            fmt.setForeground(QColor("#c586c0"))
+            sender_color = "#c586c0"
         else:
-            fmt.setForeground(QColor("#569cd6"))
-        fmt.setFontWeight(700)
-        cursor.insertText(f"@{sender} ", fmt)
+            sender_color = "#569cd6"
 
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor("#666"))
-        cursor.insertText(f"{time_str}\n", fmt)
+        # Build message widget
+        msg_widget = QWidget()
+        msg_layout = QHBoxLayout(msg_widget)
+        msg_layout.setContentsMargins(0, 4, 0, 4)
+        msg_layout.setSpacing(8)
 
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor("#d4d4d4"))
-        cursor.insertText(f"  {text[:200]}\n\n", fmt)
+        # Status indicator
+        if unread:
+            dot = QLabel("●")
+            dot.setStyleSheet("color: #f48771; font-size: 12px;")
+            dot.setFixedWidth(16)
+            msg_layout.addWidget(dot)
+        else:
+            spacer = QLabel("")
+            spacer.setFixedWidth(16)
+            msg_layout.addWidget(spacer)
 
-        self.messages_area.setTextCursor(cursor)
-        self.messages_area.ensureCursorVisible()
+        # Content
+        content = QVBoxLayout()
+        content.setSpacing(2)
+
+        header = QLabel(f"<span style='color:{sender_color}; font-weight:bold;'>@{sender}</span> <span style='color:#666;'>{time_str}</span>")
+        content.addWidget(header)
+
+        body = QLabel(text[:200])
+        body.setStyleSheet("color: #d4d4d4; font-size: 12px;")
+        body.setWordWrap(True)
+        content.addWidget(body)
+
+        msg_layout.addLayout(content, stretch=1)
+        self._add_widget_to_stream(msg_widget)
 
         if unread:
             self.raise_()
@@ -601,7 +635,11 @@ class MessageWindow(QMainWindow):
             self._mark_message_by_id(parts[1], "clear")
             return True
         elif cmd_name == "/clear":
-            self.messages_area.clear()
+            # Clear all widgets from stream except the stretch
+            while self.stream_layout.count() > 1:
+                item = self.stream_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
             self.input_field.clear()
             return True
         elif cmd_name in ("/help", "/?"):
@@ -612,63 +650,47 @@ class MessageWindow(QMainWindow):
             return True
         return False
 
-    def _clear_messages_display(self):
-        """Clear all message widgets from scroll area."""
-        while self.messages_layout.count() > 1:  # Keep the stretch
-            item = self.messages_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+    def _on_status_change(self, msg_id: str, current_status: str):
+        """Handle status button click - cycle to next status."""
+        if current_status == "unread":
+            new_action = "todo"
+        elif current_status == "todo":
+            new_action = "done"
+        elif current_status == "done":
+            new_action = "clear"
+        else:
+            new_action = "todo"
 
-    def _add_message_widget(self, msg_data: dict):
-        """Add a clickable message widget."""
-        widget = MessageWidget(msg_data, on_status_change=self._handle_message_status_change)
-        # Insert before the stretch (which is at the end)
-        self.messages_layout.insertWidget(self.messages_layout.count() - 1, widget)
+        success = self._mark_message_by_id(msg_id, new_action)
+        # Show confirmation
+        if success:
+            action_labels = {"todo": "→ TODO", "done": "→ Done", "clear": "→ Cleared"}
+            self._add_text_to_stream(f"  ✓ {action_labels.get(new_action, new_action)}", "#4ec9b0")
+        else:
+            self._add_text_to_stream(f"  ✗ Failed to update", "#f48771")
 
-    def _handle_message_status_change(self, msg_data: dict, new_status: str):
-        """Handle when user clicks on message or checkbox."""
-        msg_id = msg_data.get("id", "")
-        if msg_id:
-            self._update_message_status(msg_id, new_status)
-            # Refresh based on current view
-            if self.current_view == "todos":
-                self._show_todo_messages()
-            else:
-                self._show_my_messages()
-
-    def _update_message_status(self, msg_id: str, action: str):
-        """Update message status in org file."""
+    def _on_delete_message(self, msg_id: str):
+        """Handle delete button click - remove message from org file."""
         import re
         for inbox in DATACORE_ROOT.glob(f"*/org/inboxes/{self.username}*.org"):
             try:
                 content = inbox.read_text()
-                if msg_id in content:
-                    pattern = rf'(\* MESSAGE \[[^\]]+\])([^\n]*)(.*?:ID: {re.escape(msg_id)})'
-
-                    def replace_tags(match):
-                        header = match.group(1)
-                        tags = match.group(2)
-                        rest = match.group(3)
-                        tags = re.sub(r':(?:unread|todo|done):', '', tags).strip()
-                        if action == "todo":
-                            return f"{header} :todo:{rest}"
-                        elif action == "done":
-                            return f"{header} :done:{rest}"
-                        else:
-                            return f"{header}{rest}"
-
-                    new_content, count = re.subn(pattern, replace_tags, content, flags=re.DOTALL)
-                    if count > 0:
-                        inbox.write_text(new_content)
-                        return True
+                if msg_id not in content:
+                    continue
+                # Remove the entire MESSAGE block
+                pattern = rf'\n\* MESSAGE \[[^\]]+\][^\n]*\n:PROPERTIES:.*?:ID: {re.escape(msg_id)}.*?:END:\n.*?(?=\n\* |\Z)'
+                new_content = re.sub(pattern, '', content, flags=re.DOTALL)
+                if new_content != content:
+                    inbox.write_text(new_content)
+                    self._add_text_to_stream("  ✓ Deleted", "#f48771")
+                    break
             except:
                 pass
-        return False
 
     def _show_my_messages(self):
-        """Show all unread messages for current user as clickable widgets."""
+        """Show all unread messages for current user - appends to stream."""
         self.current_view = "mine"
-        self._clear_messages_display()
+
         messages = []
 
         # Check all inboxes for this user
@@ -678,7 +700,6 @@ class MessageWindow(QMainWindow):
                 for block in content.split("\n* MESSAGE ")[1:]:
                     msg = self._parse_message(block)
                     if msg and msg.get("unread"):
-                        msg["inbox"] = str(inbox)
                         messages.append(msg)
             except:
                 pass
@@ -690,86 +711,57 @@ class MessageWindow(QMainWindow):
                 for block in content.split("\n* MESSAGE ")[1:]:
                     msg = self._parse_message(block)
                     if msg and msg.get("unread"):
-                        msg["inbox"] = str(inbox)
                         msg["to_claude"] = True
                         messages.append(msg)
             except:
                 pass
 
-        # Add header
-        header = QLabel(f"─── {len(messages)} unread ───")
-        header.setStyleSheet("color: #c586c0; font-weight: bold; padding: 4px;")
-        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.messages_layout.insertWidget(0, header)
+        # Add header to stream
+        self._add_text_to_stream(f"─── {len(messages)} unread ───", "#c586c0", bold=True)
 
         if messages:
             for msg in sorted(messages, key=lambda m: m.get("id", "")):
-                self._add_message_widget(msg)
+                row = MessageRow(msg)
+                row.status_clicked.connect(self._on_status_change)
+                row.delete_clicked.connect(self._on_delete_message)
+                self._add_widget_to_stream(row)
         else:
-            empty = QLabel("No unread messages")
-            empty.setStyleSheet("color: #4ec9b0; padding: 20px;")
-            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.messages_layout.insertWidget(1, empty)
+            self._add_text_to_stream("  No unread messages", "#4ec9b0")
 
         self.input_field.clear()
 
     def _show_help(self):
         """Show available commands."""
-        self._clear_messages_display()
-
-        # Header
-        header = QLabel("─── Commands ───")
-        header.setStyleSheet("color: #c586c0; font-weight: bold; padding: 4px;")
-        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.messages_layout.insertWidget(0, header)
+        self._add_text_to_stream("─── Commands ───", "#c586c0", bold=True)
 
         commands = [
             ("@user message", "Send message to user"),
             ("@claude task", "Send task to your Claude"),
-            ("/mine", "Show my unread messages"),
-            ("/todos", "Show my TODO messages"),
-            ("/online", "Show online users"),
+            ("/mine", "Show unread messages"),
+            ("/todos", "Show TODO messages"),
             ("/clear", "Clear display"),
-            ("/help", "Show this help"),
         ]
 
-        # Commands list
-        help_text = ""
         for cmd, desc in commands:
-            help_text += f"<span style='color: #4ec9b0;'>{cmd}</span> <span style='color: #666;'>- {desc}</span><br>"
-
-        help_text += "<br><span style='color: #666;'>Click message to change status</span>"
-
-        help_label = QLabel(help_text)
-        help_label.setStyleSheet("padding: 10px; font-size: 12px;")
-        help_label.setTextFormat(Qt.TextFormat.RichText)
-        self.messages_layout.insertWidget(1, help_label)
+            self._add_text_to_stream(f"  {cmd:<16} {desc}", "#4ec9b0")
 
         self.input_field.clear()
 
     def _show_online(self):
         """Show online users."""
-        self._clear_messages_display()
-
-        header = QLabel("─── Online Users ───")
-        header.setStyleSheet("color: #c586c0; font-weight: bold; padding: 4px;")
-        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.messages_layout.insertWidget(0, header)
+        self._add_text_to_stream("─── Online ───", "#c586c0", bold=True)
 
         if self.relay_connected:
-            status = QLabel("Connected to relay\n(checking...)")
-            status.setStyleSheet("color: #4ec9b0; padding: 10px;")
+            self._add_text_to_stream("  Connected to relay", "#4ec9b0")
         else:
-            status = QLabel("Not connected to relay")
-            status.setStyleSheet("color: #f48771; padding: 10px;")
+            self._add_text_to_stream("  Not connected", "#f48771")
 
-        self.messages_layout.insertWidget(1, status)
         self.input_field.clear()
 
     def _show_todo_messages(self):
-        """Show messages marked as :todo: as clickable widgets."""
+        """Show messages marked as :todo: - appends to stream."""
         self.current_view = "todos"
-        self._clear_messages_display()
+
         todo_msgs = []
         done_count = 0
 
@@ -804,71 +796,73 @@ class MessageWindow(QMainWindow):
             except:
                 pass
 
-        # Add header
+        # Add header to stream
         header_text = f"─── {len(todo_msgs)} todo"
         if done_count:
             header_text += f" ({done_count} done)"
         header_text += " ───"
-        header = QLabel(header_text)
-        header.setStyleSheet("color: #dcdcaa; font-weight: bold; padding: 4px;")
-        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.messages_layout.insertWidget(0, header)
+        self._add_text_to_stream(header_text, "#dcdcaa", bold=True)
 
         if todo_msgs:
             for msg in sorted(todo_msgs, key=lambda m: m.get("id", "")):
-                self._add_message_widget(msg)
+                row = MessageRow(msg)
+                row.status_clicked.connect(self._on_status_change)
+                row.delete_clicked.connect(self._on_delete_message)
+                self._add_widget_to_stream(row)
         else:
-            empty = QLabel("No TODO messages")
-            empty.setStyleSheet("color: #4ec9b0; padding: 20px;")
-            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.messages_layout.insertWidget(1, empty)
+            self._add_text_to_stream("  No TODO messages", "#4ec9b0")
 
         self.input_field.clear()
 
-    def _mark_message_by_id(self, msg_id_part: str, action: str):
-        """Mark a message by partial ID with :todo:, :done:, or clear tags."""
+    def _mark_message_by_id(self, msg_id: str, action: str):
+        """Mark a message by ID with :todo:, :done:, or clear tags."""
         import re
-        found = False
 
         for inbox in DATACORE_ROOT.glob(f"*/org/inboxes/{self.username}*.org"):
             try:
                 content = inbox.read_text()
-                if msg_id_part in content:
-                    pattern = rf'(\* MESSAGE \[[^\]]+\])([^\n]*)(.*?:ID: [^\n]*{re.escape(msg_id_part)}[^\n]*)'
+                if msg_id not in content:
+                    continue
 
-                    def replace_tags(match):
-                        header = match.group(1)
-                        tags = match.group(2)
-                        rest = match.group(3)
-                        tags = re.sub(r':(?:unread|todo|done):', '', tags).strip()
+                # Find the MESSAGE block containing this ID and update its tags
+                # Pattern: * MESSAGE [timestamp] :tags:\n:PROPERTIES:\n:ID: msg_id
+                lines = content.split('\n')
+                new_lines = []
+                found = False
+                i = 0
 
-                        if action == "todo":
-                            return f"{header} :todo:{rest}"
-                        elif action == "done":
-                            return f"{header} :done:{rest}"
-                        else:
-                            return f"{header}{rest}"
+                while i < len(lines):
+                    line = lines[i]
 
-                    new_content, count = re.subn(pattern, replace_tags, content, flags=re.DOTALL)
-                    if count > 0:
-                        inbox.write_text(new_content)
-                        found = True
-                        break
-            except:
+                    # Check if this is a MESSAGE header and the ID matches in upcoming lines
+                    if line.startswith('* MESSAGE ['):
+                        # Look ahead for the ID in the PROPERTIES block
+                        block_end = min(i + 10, len(lines))
+                        block_has_id = any(msg_id in lines[j] for j in range(i, block_end))
+
+                        if block_has_id:
+                            # Remove existing status tags and add new one
+                            header = re.sub(r' :(unread|todo|done):', '', line)
+                            if action == "todo":
+                                header = header.rstrip() + " :todo:"
+                            elif action == "done":
+                                header = header.rstrip() + " :done:"
+                            # else: clear - no tag added
+                            new_lines.append(header)
+                            found = True
+                            i += 1
+                            continue
+
+                    new_lines.append(line)
+                    i += 1
+
+                if found:
+                    inbox.write_text('\n'.join(new_lines))
+                    return True
+
+            except Exception as e:
                 pass
-
-        # Show result and refresh
-        self._clear_messages_display()
-        if found:
-            msg = QLabel(f"✓ Marked as {action}: ...{msg_id_part}")
-            msg.setStyleSheet("color: #4ec9b0; padding: 20px;")
-        else:
-            msg = QLabel(f"✗ Message not found: {msg_id_part}")
-            msg.setStyleSheet("color: #f48771; padding: 20px;")
-        msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.messages_layout.insertWidget(0, msg)
-
-        self.input_field.clear()
+        return False
 
     def _send_message(self):
         text = self.input_field.text().strip()
