@@ -100,7 +100,7 @@ def get_default_space() -> str:
 
 def get_relay_url() -> str:
     conf = get_settings()
-    return conf.get("messaging", {}).get("relay", {}).get("url", "wss://chat.datafund.ai/ws")
+    return conf.get("messaging", {}).get("relay", {}).get("url", "wss://datacore-messaging-relay.datafund.ai/ws")
 
 
 def get_relay_secret() -> str:
@@ -250,11 +250,20 @@ class EmbeddedRelay:
                             continue
 
                         resolved, _, _ = self.resolve_claude_target(username, to_user)
+                        msg_payload = {
+                            "text": text,
+                            "priority": data.get("priority", "normal"),
+                            "msg_id": data.get("msg_id", ""),
+                            "timestamp": time.time()
+                        }
+                        # Include threading info if present
+                        if data.get("thread"):
+                            msg_payload["thread"] = data["thread"]
+                        if data.get("reply_to"):
+                            msg_payload["reply_to"] = data["reply_to"]
+
                         result = await self.route_message(
-                            username, to_user,
-                            {"text": text, "priority": data.get("priority", "normal"),
-                             "msg_id": data.get("msg_id", ""), "timestamp": time.time()},
-                            sender_ws=ws
+                            username, to_user, msg_payload, sender_ws=ws
                         )
 
                         if result == "auto_replied":
@@ -1005,19 +1014,34 @@ class MessageWindow(QMainWindow):
         if recipient == "claude":
             recipient = f"{self.username}-claude"
 
-        msg_id = self._write_to_inbox(recipient, msg_text)
+        # Check for reply syntax: @user >msg-id text
+        reply_to = None
+        thread_id = None
+        if msg_text.startswith(">"):
+            reply_parts = msg_text.split(" ", 1)
+            if len(reply_parts) >= 2:
+                reply_to = reply_parts[0][1:]  # Remove >
+                msg_text = reply_parts[1]
+                # Find thread ID from parent message
+                thread_id = self._get_thread_for_message(reply_to)
+                if not thread_id:
+                    # Start new thread from parent message
+                    thread_id = f"thread-{reply_to}"
+
+        msg_id = self._write_to_inbox(recipient, msg_text, reply_to=reply_to, thread_id=thread_id)
 
         if msg_id:
             # Send via relay
             if self.relay_connected:
                 def send():
-                    asyncio.run(self._send_via_relay(recipient, msg_text, msg_id))
+                    asyncio.run(self._send_via_relay(recipient, msg_text, msg_id, thread_id, reply_to))
                 threading.Thread(target=send, daemon=True).start()
 
-            self.add_message(f"you→{recipient}", msg_text, datetime.now().strftime("%H:%M"))
+            display_text = f"↩ {msg_text}" if reply_to else msg_text
+            self.add_message(f"you→{recipient}", display_text, datetime.now().strftime("%H:%M"))
             self.input_field.clear()
 
-    async def _send_via_relay(self, to: str, text: str, msg_id: str):
+    async def _send_via_relay(self, to: str, text: str, msg_id: str, thread_id: str = None, reply_to: str = None):
         if not HAS_WEBSOCKETS:
             return
         try:
@@ -1029,17 +1053,22 @@ class MessageWindow(QMainWindow):
                     "claude_whitelist": get_claude_whitelist()
                 }))
                 await ws.recv()
-                await ws.send(json.dumps({
+                msg = {
                     "type": "send",
                     "to": to,
                     "text": text,
                     "msg_id": msg_id
-                }))
+                }
+                if thread_id:
+                    msg["thread"] = thread_id
+                if reply_to:
+                    msg["reply_to"] = reply_to
+                await ws.send(json.dumps(msg))
                 await ws.recv()
         except:
             pass
 
-    def _write_to_inbox(self, to: str, text: str) -> str:
+    def _write_to_inbox(self, to: str, text: str, reply_to: str = None, thread_id: str = None) -> str:
         try:
             inbox_dir = DATACORE_ROOT / self.default_space / "org/inboxes"
             inbox_dir.mkdir(parents=True, exist_ok=True)
@@ -1049,12 +1078,22 @@ class MessageWindow(QMainWindow):
             msg_id = f"msg-{now.strftime('%Y%m%d-%H%M%S')}-{self.username}"
             timestamp = now.strftime("[%Y-%m-%d %a %H:%M]")
 
+            # Build properties
+            props = [
+                f":ID: {msg_id}",
+                f":FROM: {self.username}",
+                f":TO: {to}",
+            ]
+            if thread_id:
+                props.append(f":THREAD: {thread_id}")
+            if reply_to:
+                props.append(f":REPLY_TO: {reply_to}")
+
+            props_str = "\n".join(props)
             entry = f"""
 * MESSAGE {timestamp} :unread:
 :PROPERTIES:
-:ID: {msg_id}
-:FROM: {self.username}
-:TO: {to}
+{props_str}
 :END:
 {text}
 """
@@ -1065,6 +1104,24 @@ class MessageWindow(QMainWindow):
             return msg_id
         except:
             return None
+
+    def _get_thread_for_message(self, msg_id: str) -> str:
+        """Find thread ID for a message, or None if not in a thread."""
+        for inbox in DATACORE_ROOT.glob("*/org/inboxes/*.org"):
+            try:
+                content = inbox.read_text()
+                if msg_id not in content:
+                    continue
+                for block in content.split("\n* MESSAGE ")[1:]:
+                    if msg_id in block:
+                        # Parse properties
+                        for line in block.split("\n"):
+                            if ":THREAD:" in line:
+                                return line.split(":THREAD:")[1].strip()
+                        return None
+            except:
+                pass
+        return None
 
     def _load_existing_messages(self):
         messages = []
@@ -1122,7 +1179,9 @@ class MessageWindow(QMainWindow):
                 "time": time_str,
                 "unread": is_unread,
                 "todo": is_todo,
-                "done": is_done
+                "done": is_done,
+                "thread": props.get("thread"),
+                "reply_to": props.get("reply_to")
             }
         except:
             return None

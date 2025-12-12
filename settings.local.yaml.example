@@ -22,7 +22,7 @@ messaging:
     # url: "ws://localhost:8080/ws"                           # Local testing
     # url: "ws://192.168.1.100:8080/ws"                       # LAN server (no SSL)
     # url: "ws://relay.internal.company.com:8080/ws"          # Internal server (no SSL)
-    url: "wss://chat.datafund.ai/ws"      # Public relay (with SSL)
+    url: "wss://datacore-messaging-relay.datafund.ai/ws"      # Public relay (with SSL)
 
 # Routing:
 #   @claude        → automatically routes to @<sender>-claude (your own Claude)

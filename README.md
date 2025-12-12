@@ -8,7 +8,7 @@ Real-time team messaging with Claude Code integration.
 - **Claude Code integration**: Message `@claude` to delegate AI tasks to your personal Claude
 - **Namespaced agents**: `@tex-claude`, `@gregor-claude` - each user has their own Claude
 - **Whitelist control**: Choose who can message your Claude (others get auto-reply)
-- **WebSocket relay**: Real-time delivery via `chat.datafund.ai`
+- **WebSocket relay**: Real-time delivery via `datacore-messaging-relay.datafund.ai`
 - **Local storage**: Messages saved as org-mode entries for offline access
 
 ## Installation
@@ -42,7 +42,7 @@ messaging:
 
   relay:
     secret: "your-team-secret"     # Same for all team members
-    url: "wss://chat.datafund.ai/ws"
+    url: "wss://datacore-messaging-relay.datafund.ai/ws"
 ```
 
 ## Usage
@@ -61,6 +61,7 @@ In the GUI input field:
 - `@gregor Hey, can you review the PR?` - Message a teammate
 - `@claude Research competitor pricing` - Message your Claude agent
 - `@gregor-claude Help with code review` - Message someone else's Claude (if whitelisted)
+- `@gregor >msg-id Follow-up here` - Reply to a message (creates thread)
 
 ### GUI Commands
 
@@ -152,6 +153,9 @@ After displaying, messages are marked as read (`:unread:` tag removed from org f
 ```bash
 # Claude can reply via the send-reply script
 python3 hooks/send-reply.py gregor "Fixed! Check the PR."
+
+# Reply to a specific message (creates thread)
+python3 hooks/send-reply.py --reply-to msg-20251212-143000-gregor gregor "Here's the follow-up"
 ```
 
 The reply is:
@@ -197,16 +201,21 @@ The ID is shown in the hook output `[msg-id: msg-20251212-151230-tex]` - use any
 :ID: msg-20251212-143000-gregor
 :FROM: gregor
 :TO: tex
-:PRIORITY: normal
+:THREAD: thread-msg-20251212-142500-tex
+:REPLY_TO: msg-20251212-142500-tex
 :END:
 Can you review PR #24?
 ```
+
+**Threading properties:**
+- `THREAD` - Thread ID (shared by all messages in conversation)
+- `REPLY_TO` - Parent message ID (direct reply target)
 
 ## Relay Server
 
 The relay enables real-time messaging between team members.
 
-**Default relay**: `wss://chat.datafund.ai/ws`
+**Default relay**: `wss://datacore-messaging-relay.datafund.ai/ws`
 
 ### Deploy Your Own
 
