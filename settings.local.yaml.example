@@ -1,0 +1,11 @@
+# Messaging module settings
+# Copy to settings.local.yaml and configure
+
+identity:
+  name: yourname                   # Your username (required)
+
+messaging:
+  default_space: datafund          # Default space for messages
+  relay:
+    secret: "your-team-shared-secret"    # Same for all team members
+    url: "wss://datacore-relay.fly.dev"  # Your relay server URL

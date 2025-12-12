@@ -36,20 +36,39 @@ except ImportError:
 # === CONFIG ===
 
 DATACORE_ROOT = Path(os.environ.get("DATACORE_ROOT", Path.home() / "Data"))
+MODULE_DIR = Path(__file__).parent.parent  # datacore-messaging/
 POLL_INTERVAL = 2  # seconds
 DEFAULT_RELAY = "wss://datacore-relay.fly.dev"
 
 
 def get_settings() -> dict:
-    """Load settings from yaml."""
-    settings_path = DATACORE_ROOT / ".datacore/settings.local.yaml"
-    if settings_path.exists():
+    """Load settings from yaml. Module settings take precedence."""
+    import yaml
+    settings = {}
+
+    # First load from datacore root (base settings)
+    root_settings = DATACORE_ROOT / ".datacore/settings.local.yaml"
+    if root_settings.exists():
         try:
-            import yaml
-            return yaml.safe_load(settings_path.read_text()) or {}
+            settings = yaml.safe_load(root_settings.read_text()) or {}
         except:
             pass
-    return {}
+
+    # Then overlay module-specific settings
+    module_settings = MODULE_DIR / "settings.local.yaml"
+    if module_settings.exists():
+        try:
+            mod = yaml.safe_load(module_settings.read_text()) or {}
+            # Deep merge - module settings override root
+            for key, value in mod.items():
+                if key in settings and isinstance(settings[key], dict) and isinstance(value, dict):
+                    settings[key].update(value)
+                else:
+                    settings[key] = value
+        except:
+            pass
+
+    return settings
 
 
 def get_username() -> str:

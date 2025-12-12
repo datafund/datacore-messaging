@@ -1,0 +1,10 @@
+# Local settings (contains secrets)
+settings.local.yaml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+.DS_Store
