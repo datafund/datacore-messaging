@@ -3,6 +3,7 @@
 datacore-msg - Terminal messenger for Datacore
 
 Pure terminal messaging - no GUI, socket-based notifications.
+Supports both local (Unix socket) and remote (WebSocket relay) modes.
 
 Usage:
     datacore-msg                    # Interactive mode
@@ -11,6 +12,8 @@ Usage:
     datacore-msg watch              # Watch for new messages
     datacore-msg peers              # List online peers
     datacore-msg daemon             # Run notification daemon
+    datacore-msg login              # Authenticate with relay server
+    datacore-msg connect            # Connect to relay (after login)
 
 Examples:
     datacore-msg send @crt "Need OAuth keys"
@@ -23,14 +26,36 @@ import json
 import os
 import sys
 import fcntl
+import webbrowser
 from pathlib import Path
 from datetime import datetime
+
+# Optional websockets for relay
+try:
+    import websockets
+    HAS_WEBSOCKETS = True
+except ImportError:
+    HAS_WEBSOCKETS = False
 
 # === CONFIG ===
 
 DATACORE_ROOT = Path(os.environ.get("DATACORE_ROOT", Path.home() / "Data"))
 SOCK_DIR = Path("/tmp")
 CLAUDE_PIPE = Path("/tmp/datacore-claude.pipe")
+TOKEN_FILE = DATACORE_ROOT / ".datacore/state/relay-token"
+DEFAULT_RELAY = "wss://datacore-relay.fly.dev"
+
+
+def get_settings() -> dict:
+    """Load settings from yaml."""
+    settings = DATACORE_ROOT / ".datacore/settings.local.yaml"
+    if settings.exists():
+        try:
+            import yaml
+            return yaml.safe_load(settings.read_text()) or {}
+        except:
+            pass
+    return {}
 
 
 def get_username() -> str:
@@ -38,32 +63,20 @@ def get_username() -> str:
     if "DATACORE_USER" in os.environ:
         return os.environ["DATACORE_USER"]
 
-    settings = DATACORE_ROOT / ".datacore/settings.local.yaml"
-    if settings.exists():
-        try:
-            import yaml
-            conf = yaml.safe_load(settings.read_text())
-            name = conf.get("identity", {}).get("name")
-            if name:
-                return name
-        except:
-            pass
+    conf = get_settings()
+    name = conf.get("identity", {}).get("name")
+    if name:
+        return name
 
     return os.environ.get("USER", "unknown")
 
 
 def get_default_space() -> str:
     """Get default messaging space."""
-    settings = DATACORE_ROOT / ".datacore/settings.local.yaml"
-    if settings.exists():
-        try:
-            import yaml
-            conf = yaml.safe_load(settings.read_text())
-            space = conf.get("messaging", {}).get("default_space")
-            if space:
-                return space
-        except:
-            pass
+    conf = get_settings()
+    space = conf.get("messaging", {}).get("default_space")
+    if space:
+        return space
 
     for p in sorted(DATACORE_ROOT.glob("[1-9]-*")):
         if p.is_dir():
@@ -72,9 +85,35 @@ def get_default_space() -> str:
     return "1-team"
 
 
+def get_relay_url() -> str:
+    """Get relay server URL from settings."""
+    conf = get_settings()
+    return conf.get("messaging", {}).get("relay", {}).get("url", DEFAULT_RELAY)
+
+
+def is_relay_enabled() -> bool:
+    """Check if relay is enabled in settings."""
+    conf = get_settings()
+    return conf.get("messaging", {}).get("relay", {}).get("enabled", False)
+
+
 def get_socket_path(user: str) -> Path:
     """Get socket path for user."""
     return SOCK_DIR / f"datacore-msg-{user}.sock"
+
+
+def get_relay_token() -> str | None:
+    """Get stored relay token."""
+    if TOKEN_FILE.exists():
+        return TOKEN_FILE.read_text().strip()
+    return None
+
+
+def save_relay_token(token: str):
+    """Save relay token."""
+    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TOKEN_FILE.write_text(token)
+    TOKEN_FILE.chmod(0o600)
 
 
 # === MESSAGE STORE ===
@@ -167,7 +206,7 @@ def read_messages(unread_only: bool = True) -> list:
     return sorted(messages, key=lambda m: m.get("id", ""))
 
 
-# === SOCKET NOTIFICATIONS ===
+# === LOCAL SOCKET NOTIFICATIONS ===
 
 class NotificationDaemon:
     """Simple daemon that listens for message notifications."""
@@ -249,8 +288,8 @@ class NotificationDaemon:
         self.socket_path.unlink(missing_ok=True)
 
 
-async def notify_peer(user: str, msg_id: str) -> bool:
-    """Send notification to peer if online."""
+async def notify_peer_local(user: str, msg_id: str) -> bool:
+    """Send notification to peer via local socket."""
     socket_path = get_socket_path(user)
     if not socket_path.exists():
         return False
@@ -269,13 +308,144 @@ async def notify_peer(user: str, msg_id: str) -> bool:
         return False
 
 
-def list_online_peers() -> list:
-    """List peers with active sockets."""
+def list_online_peers_local() -> list:
+    """List peers with active local sockets."""
     peers = []
     for sock in SOCK_DIR.glob("datacore-msg-*.sock"):
         user = sock.stem.replace("datacore-msg-", "")
         peers.append(user)
     return peers
+
+
+# === RELAY CLIENT ===
+
+class RelayClient:
+    """WebSocket client for relay server."""
+
+    def __init__(self, url: str, token: str):
+        self.url = url
+        self.token = token
+        self.ws = None
+        self.username = None
+        self.online_users = []
+        self.message_callback = None
+        self.presence_callback = None
+
+    async def connect(self):
+        """Connect and authenticate with relay."""
+        if not HAS_WEBSOCKETS:
+            raise RuntimeError("websockets package not installed. Run: pip install websockets")
+
+        self.ws = await websockets.connect(self.url)
+
+        # Authenticate
+        await self.ws.send(json.dumps({
+            "type": "auth",
+            "token": self.token
+        }))
+
+        response = json.loads(await self.ws.recv())
+
+        if response.get("type") == "auth_error":
+            raise RuntimeError(f"Auth failed: {response.get('message')}")
+
+        if response.get("type") == "auth_ok":
+            self.username = response.get("username")
+            self.online_users = response.get("online", [])
+            return True
+
+        return False
+
+    async def send_message(self, to: str, text: str, msg_id: str, priority: str = "normal") -> dict:
+        """Send message via relay."""
+        await self.ws.send(json.dumps({
+            "type": "send",
+            "to": to,
+            "text": text,
+            "msg_id": msg_id,
+            "priority": priority
+        }))
+
+        response = json.loads(await self.ws.recv())
+        return response
+
+    async def get_presence(self) -> list:
+        """Get list of online users."""
+        await self.ws.send(json.dumps({"type": "presence"}))
+        response = json.loads(await self.ws.recv())
+        if response.get("type") == "presence":
+            self.online_users = response.get("online", [])
+        return self.online_users
+
+    async def listen(self):
+        """Listen for incoming messages."""
+        async for message in self.ws:
+            data = json.loads(message)
+            msg_type = data.get("type")
+
+            if msg_type == "message":
+                # Incoming message
+                from_user = data.get("from")
+                text = data.get("text")
+                priority = data.get("priority", "normal")
+
+                # Write to local inbox
+                write_message_from_relay(from_user, text, priority)
+
+                if self.message_callback:
+                    await self.message_callback(data)
+
+            elif msg_type == "presence_change":
+                self.online_users = data.get("online", [])
+                if self.presence_callback:
+                    await self.presence_callback(data)
+
+    async def close(self):
+        """Close connection."""
+        if self.ws:
+            await self.ws.close()
+
+
+def write_message_from_relay(from_user: str, text: str, priority: str = "normal") -> str:
+    """Write message received from relay to local inbox."""
+    to_user = get_username()
+    space = get_default_space()
+
+    inbox_dir = DATACORE_ROOT / space / "org/inboxes"
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    inbox = inbox_dir / f"{to_user}.org"
+
+    now = datetime.now()
+    msg_id = f"msg-{now.strftime('%Y%m%d-%H%M%S')}-{from_user}"
+    timestamp = now.strftime("[%Y-%m-%d %a %H:%M]")
+
+    entry = f"""
+* MESSAGE {timestamp} :unread:
+:PROPERTIES:
+:ID: {msg_id}
+:FROM: {from_user}
+:TO: {to_user}
+:PRIORITY: {priority}
+:SOURCE: relay
+:END:
+{text}
+"""
+
+    with open(inbox, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(entry)
+        fcntl.flock(f, fcntl.LOCK_UN)
+
+    return msg_id
+
+
+async def notify_peer_relay(relay: RelayClient, user: str, text: str, msg_id: str, priority: str = "normal") -> bool:
+    """Send notification to peer via relay."""
+    try:
+        response = await relay.send_message(user, text, msg_id, priority)
+        return response.get("delivered", False)
+    except:
+        return False
 
 
 # === DISPLAY ===
@@ -305,10 +475,10 @@ def display_messages(messages: list):
 
 # === INTERACTIVE MODE ===
 
-async def interactive_mode():
-    """Interactive messaging mode."""
+async def interactive_mode_local():
+    """Interactive messaging mode (local only)."""
     username = get_username()
-    print(f"datacore-msg | @{username}")
+    print(f"datacore-msg | @{username} (local)")
     print("Commands: @user msg | /read | /peers | /quit")
     print()
 
@@ -335,7 +505,7 @@ async def interactive_mode():
                 continue
 
             msg_id = write_message(recipient, text)
-            notified = await notify_peer(recipient, msg_id)
+            notified = await notify_peer_local(recipient, msg_id)
             status = "✓ delivered" if notified else "✓ queued"
             print(f"  {status}")
 
@@ -348,11 +518,11 @@ async def interactive_mode():
             display_messages(messages)
 
         elif line == "/peers":
-            peers = list_online_peers()
+            peers = list_online_peers_local()
             if peers:
-                print(f"Online: {', '.join('@' + p for p in peers)}")
+                print(f"Online (local): {', '.join('@' + p for p in peers)}")
             else:
-                print("No peers online")
+                print("No local peers online")
 
         elif line in ["/quit", "/q", "/exit"]:
             break
@@ -361,7 +531,156 @@ async def interactive_mode():
             print("Commands: @user msg | /read | /unread | /peers | /quit")
 
 
+async def interactive_mode_relay():
+    """Interactive messaging mode with relay connection."""
+    if not HAS_WEBSOCKETS:
+        print("Error: websockets package not installed")
+        print("Run: pip install websockets")
+        return
+
+    token = get_relay_token()
+    if not token:
+        print("Not authenticated. Run: datacore-msg login")
+        return
+
+    relay_url = get_relay_url()
+    relay = RelayClient(relay_url, token)
+
+    try:
+        await relay.connect()
+    except Exception as e:
+        print(f"Connection failed: {e}")
+        print("Try: datacore-msg login")
+        return
+
+    username = relay.username
+    print(f"datacore-msg | @{username} (relay: {relay_url})")
+    print(f"Online: {', '.join('@' + u for u in relay.online_users)}")
+    print("Commands: @user msg | /read | /peers | /local | /quit")
+    print()
+
+    # Start listener in background
+    async def on_message(data):
+        from_user = data.get("from")
+        text = data.get("text", "")[:50]
+        print(f"\n🔔 @{from_user}: {text}")
+        print("> ", end="", flush=True)
+
+    async def on_presence(data):
+        user = data.get("user")
+        status = data.get("status")
+        print(f"\n[{user} is now {status}]")
+        print("> ", end="", flush=True)
+
+    relay.message_callback = on_message
+    relay.presence_callback = on_presence
+
+    listener_task = asyncio.create_task(relay.listen())
+
+    try:
+        while True:
+            try:
+                line = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: input("> ")
+                )
+            except (EOFError, KeyboardInterrupt):
+                break
+
+            line = line.strip()
+            if not line:
+                continue
+
+            if line.startswith("@"):
+                # Send message
+                parts = line.split(" ", 1)
+                recipient = parts[0][1:]
+                text = parts[1] if len(parts) > 1 else ""
+
+                if not text:
+                    print("Usage: @user message")
+                    continue
+
+                # Write locally first
+                msg_id = write_message(recipient, text)
+
+                # Try relay
+                delivered = await notify_peer_relay(relay, recipient, text, msg_id)
+
+                # Fall back to local if not delivered via relay
+                if not delivered:
+                    delivered = await notify_peer_local(recipient, msg_id)
+
+                status = "✓ delivered" if delivered else "✓ queued"
+                print(f"  {status}")
+
+            elif line == "/read":
+                messages = read_messages(unread_only=False)
+                display_messages(messages[-10:])
+
+            elif line == "/unread":
+                messages = read_messages(unread_only=True)
+                display_messages(messages)
+
+            elif line == "/peers":
+                online = await relay.get_presence()
+                local_peers = list_online_peers_local()
+                all_peers = list(set(online + local_peers))
+                if all_peers:
+                    print(f"Online: {', '.join('@' + p for p in all_peers)}")
+                else:
+                    print("No peers online")
+
+            elif line == "/local":
+                # Switch to local mode
+                print("Switching to local mode...")
+                break
+
+            elif line in ["/quit", "/q", "/exit"]:
+                break
+
+            else:
+                print("Commands: @user msg | /read | /unread | /peers | /local | /quit")
+
+    finally:
+        listener_task.cancel()
+        await relay.close()
+
+
+async def interactive_mode():
+    """Interactive mode - chooses relay or local based on settings."""
+    if is_relay_enabled() and get_relay_token():
+        await interactive_mode_relay()
+    else:
+        await interactive_mode_local()
+
+
 # === CLI ===
+
+def cmd_login(args):
+    """Handle login command."""
+    relay_url = get_relay_url().replace("wss://", "https://").replace("ws://", "http://")
+    auth_url = f"{relay_url}/auth/start"
+
+    print(f"Opening browser for GitHub authentication...")
+    print(f"URL: {auth_url}")
+    print()
+    print("After authenticating, copy the token from the page.")
+    print()
+
+    webbrowser.open(auth_url)
+
+    token = input("Paste token here: ").strip()
+    if token:
+        save_relay_token(token)
+        print("✓ Token saved. You can now use: datacore-msg connect")
+    else:
+        print("No token provided.")
+
+
+async def cmd_connect(args):
+    """Handle connect command."""
+    await interactive_mode_relay()
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -393,13 +712,38 @@ def main():
     # daemon
     subparsers.add_parser("daemon", help="Run notification daemon")
 
+    # login
+    subparsers.add_parser("login", help="Authenticate with relay server")
+
+    # connect
+    subparsers.add_parser("connect", help="Connect to relay server")
+
     args = parser.parse_args()
 
     if args.command == "send":
         recipient = args.recipient.lstrip("@")
         text = " ".join(args.message)
         msg_id = write_message(recipient, text, args.priority)
-        notified = asyncio.run(notify_peer(recipient, msg_id))
+
+        async def send_with_notify():
+            # Try relay first if enabled
+            if is_relay_enabled():
+                token = get_relay_token()
+                if token:
+                    try:
+                        relay = RelayClient(get_relay_url(), token)
+                        await relay.connect()
+                        delivered = await notify_peer_relay(relay, recipient, text, msg_id, args.priority)
+                        await relay.close()
+                        if delivered:
+                            return True
+                    except:
+                        pass
+
+            # Fall back to local
+            return await notify_peer_local(recipient, msg_id)
+
+        notified = asyncio.run(send_with_notify())
         status = "delivered" if notified else "queued (offline)"
         print(f"✓ Sent to @{recipient} ({status})")
 
@@ -423,7 +767,25 @@ def main():
             print("\nStopped.")
 
     elif args.command == "peers":
-        peers = list_online_peers()
+        peers = list_online_peers_local()
+
+        # Also check relay if enabled
+        if is_relay_enabled():
+            token = get_relay_token()
+            if token:
+                async def get_relay_peers():
+                    try:
+                        relay = RelayClient(get_relay_url(), token)
+                        await relay.connect()
+                        online = await relay.get_presence()
+                        await relay.close()
+                        return online
+                    except:
+                        return []
+
+                relay_peers = asyncio.run(get_relay_peers())
+                peers = list(set(peers + relay_peers))
+
         if peers:
             print(f"Online: {', '.join('@' + p for p in peers)}")
         else:
@@ -437,6 +799,12 @@ def main():
         except KeyboardInterrupt:
             daemon.cleanup()
             print("\nDaemon stopped.")
+
+    elif args.command == "login":
+        cmd_login(args)
+
+    elif args.command == "connect":
+        asyncio.run(cmd_connect(args))
 
     else:
         # Interactive mode (default)

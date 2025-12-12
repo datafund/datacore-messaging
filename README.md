@@ -12,6 +12,7 @@ Inter-user messaging for Datacore via shared space inboxes.
 - **Git-based delivery**: Messages sync via existing `./sync` workflow
 - **Real-time UI**: Floating window shows messages as they arrive
 - **Terminal CLI**: Pure terminal messaging with socket notifications
+- **Internet relay**: Connect remote users via WebSocket relay with GitHub OAuth
 
 ## Installation
 
@@ -32,6 +33,9 @@ identity:
 messaging:
   default_space: datafund          # Default space for /msg
   show_in_today: true              # Include unread count in /today briefing
+  relay:
+    enabled: true                  # Enable relay for remote messaging
+    url: "wss://datacore-relay.fly.dev"  # Relay server URL
 ```
 
 ## Usage
@@ -64,29 +68,30 @@ python ~/.datacore/modules/messaging/lib/datacore-msg-window.py
 
 Features:
 - Always-on-top floating window (top-right corner)
-- Dark theme
-- Real-time updates (watches inbox files)
+- Dark theme with relay status indicator
+- Real-time updates (local + relay)
 - System notifications with sound
 - Send messages inline
 - macOS native notifications
+- Shows online users count when relay connected
 
 ```
-┌─ Messages @gregor ─────────────────────[─][□][×]─┐
-│                                                   │
-│ ● @crt 14:30                                      │
-│   Need OAuth keys - see issue #25                 │
-│                                                   │
-│ ● @claude 14:35                                   │
-│   Research complete. See research/competitors.md  │
-│                                                   │
-│   @you→crt 14:40                                  │
-│   Keys are in the vault                           │
-│                                                   │
-├───────────────────────────────────────────────────┤
-│ @crt Thanks! ____________________________         │
-├───────────────────────────────────────────────────┤
-│ Space: datafund                                   │
-└───────────────────────────────────────────────────┘
+┌─ Messages @gregor ─────────────────● relay─┐
+│                                 3 online   │
+│ ● @crt 14:30 ↗                             │
+│   Need OAuth keys - see issue #25          │
+│                                            │
+│ ● @claude 14:35                            │
+│   Research complete. See research/         │
+│                                            │
+│   @you→crt 14:40 ↗                         │
+│   Keys are in the vault                    │
+│                                            │
+├────────────────────────────────────────────┤
+│ @crt Thanks! ____________________          │
+├────────────────────────────────────────────┤
+│ ✓ Sent to @crt (relay)                     │
+└────────────────────────────────────────────┘
 ```
 
 ### Terminal CLI
@@ -104,12 +109,17 @@ datacore-msg read --all
 datacore-msg peers
 datacore-msg watch      # Watch for new messages
 datacore-msg daemon     # Run notification daemon (background)
+
+# Relay commands
+datacore-msg login      # Authenticate with GitHub OAuth
+datacore-msg connect    # Connect to relay in interactive mode
 ```
 
 Interactive mode:
 ```
-datacore-msg | @gregor
-Commands: @user msg | /read | /peers | /quit
+datacore-msg | @gregor (relay: wss://datacore-relay.fly.dev)
+Online: @crt, @claude, @gregor
+Commands: @user msg | /read | /peers | /local | /quit
 
 > @crt Need those OAuth keys
   ✓ delivered
@@ -134,6 +144,100 @@ The daemon:
 - Listens on Unix socket (`/tmp/datacore-msg-{user}.sock`)
 - Receives pings when messages arrive
 - Forwards @claude messages to Claude Code session via named pipe
+
+## Relay Server
+
+The relay server enables messaging between users on different machines over the internet.
+
+### Architecture
+
+```
+┌─────────────┐     WebSocket      ┌─────────────┐
+│   User A    │◄──────────────────►│   Relay     │
+│  (macOS)    │                    │  (fly.io)   │
+└─────────────┘                    └──────┬──────┘
+                                          │
+┌─────────────┐     WebSocket             │
+│   User B    │◄──────────────────────────┘
+│  (Linux)    │
+└─────────────┘
+```
+
+### Deploy Your Own Relay
+
+1. **Create GitHub OAuth App**
+
+   Go to [GitHub Developer Settings](https://github.com/settings/developers) → OAuth Apps → New OAuth App:
+   - Application name: `Datacore Relay`
+   - Homepage URL: `https://datacore-relay.fly.dev`
+   - Authorization callback URL: `https://datacore-relay.fly.dev/auth/callback`
+
+   Save the Client ID and Client Secret.
+
+2. **Deploy to fly.io**
+
+   ```bash
+   # Install flyctl
+   curl -L https://fly.io/install.sh | sh
+
+   # Login to fly.io
+   fly auth login
+
+   # Create app
+   cd ~/.datacore/modules/messaging
+   fly launch --copy-config --name datacore-relay
+
+   # Set secrets
+   fly secrets set GITHUB_CLIENT_ID=your_client_id
+   fly secrets set GITHUB_CLIENT_SECRET=your_client_secret
+   fly secrets set RELAY_SECRET=$(openssl rand -hex 32)
+
+   # Optional: restrict to org members
+   fly secrets set ALLOWED_ORG=datafund
+
+   # Deploy
+   fly deploy
+   ```
+
+3. **Configure Clients**
+
+   Add to `settings.local.yaml`:
+   ```yaml
+   messaging:
+     relay:
+       enabled: true
+       url: "wss://datacore-relay.fly.dev"
+   ```
+
+4. **Login**
+
+   ```bash
+   datacore-msg login
+   # Opens browser for GitHub OAuth
+   # Paste token when prompted
+   ```
+
+### Relay Protocol
+
+The relay uses JSON over WebSocket:
+
+```json
+// Authentication
+{"type": "auth", "token": "..."}
+{"type": "auth_ok", "username": "gregor", "online": ["crt", "claude"]}
+
+// Send message
+{"type": "send", "to": "crt", "text": "Hello!", "msg_id": "...", "priority": "normal"}
+{"type": "send_ack", "to": "crt", "delivered": true}
+
+// Receive message
+{"type": "message", "from": "crt", "text": "Hello!", "priority": "normal"}
+
+// Presence
+{"type": "presence"}
+{"type": "presence", "online": ["gregor", "crt", "claude"]}
+{"type": "presence_change", "user": "crt", "status": "offline", "online": ["gregor"]}
+```
 
 ## How It Works
 
@@ -160,7 +264,7 @@ Messages are stored as org-mode entries in shared space inboxes:
 :FROM: gregor
 :TO: crt
 :PRIORITY: normal
-:THREAD: nil
+:SOURCE: relay
 :END:
 Your message content here.
 ```
@@ -178,6 +282,12 @@ Your message content here.
 2. Sender pings recipient's socket
 3. Recipient's daemon/window shows notification immediately
 
+**Relay-based (real-time, internet):**
+1. Sender writes message to local org file
+2. Sender sends via WebSocket to relay
+3. Relay routes to recipient if online
+4. Recipient receives instantly + writes to local inbox
+
 ### User Discovery
 
 Users are auto-registered when they first send a message:
@@ -194,12 +304,9 @@ users:
     type: ai
 ```
 
-Online peers discovered by checking socket existence:
-```
-/tmp/datacore-msg-gregor.sock  → @gregor online
-/tmp/datacore-msg-crt.sock     → @crt online
-/tmp/datacore-msg-claude.sock  → @claude agent running
-```
+Online peers discovered via:
+- Local: Socket existence (`/tmp/datacore-msg-*.sock`)
+- Relay: Presence query to relay server
 
 ## Commands Reference
 
@@ -210,6 +317,20 @@ Online peers discovered by checking socket existence:
 | `/reply [id] "text"` | Reply to a message |
 | `/msg-add-user name` | Add user to registry |
 | `/broadcast "text"` | Message all team members |
+
+## CLI Reference
+
+| Command | Description |
+|---------|-------------|
+| `datacore-msg` | Interactive mode (auto-detects relay) |
+| `datacore-msg send @user "msg"` | Send message |
+| `datacore-msg read` | Read unread messages |
+| `datacore-msg read --all` | Read all messages |
+| `datacore-msg peers` | List online peers |
+| `datacore-msg watch` | Watch for new messages |
+| `datacore-msg daemon` | Run notification daemon |
+| `datacore-msg login` | GitHub OAuth login for relay |
+| `datacore-msg connect` | Connect to relay server |
 
 ## Integration
 
@@ -249,22 +370,34 @@ Claude Code can read this pipe to receive messages in real-time.
 ```
 lib/
 ├── datacore-msg           # Terminal CLI (Python)
-└── datacore-msg-window.py # Floating GUI window (Tkinter)
+├── datacore-msg-window.py # Floating GUI window (Tkinter)
+└── datacore-msg-relay.py  # WebSocket relay server (aiohttp)
+
+fly.toml                   # fly.io deployment config
+requirements.txt           # Python dependencies
+Procfile                   # Process definition for deployment
 ```
 
 ## Requirements
 
+**Client (CLI/GUI):**
 - Python 3.8+
 - tkinter (included with Python, for GUI window)
-- No external dependencies
+- websockets (optional, for relay): `pip install websockets`
+
+**Relay Server:**
+- Python 3.8+
+- aiohttp
+- websockets
 
 ## Roadmap
 
 - [x] Phase 1: Core messaging (`/msg`, `/my-messages`, `/reply`)
 - [x] Phase 2: Real-time GUI window
 - [x] Phase 2: Terminal CLI with socket notifications
-- [ ] Phase 3: Slack/email notifications, webhooks
-- [ ] Phase 4: Encryption, expiring messages, channels
+- [x] Phase 3: Internet relay with GitHub OAuth
+- [ ] Phase 4: Slack/email notifications, webhooks
+- [ ] Phase 5: Encryption, expiring messages, channels
 
 ## License
 

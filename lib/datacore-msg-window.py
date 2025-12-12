@@ -3,7 +3,7 @@
 datacore-msg-window - Floating message overlay for Datacore
 
 A small always-on-top window that shows messages in real-time.
-Watches inbox files and notifies on new messages.
+Supports both local file watching and WebSocket relay for remote messages.
 
 Usage:
     python datacore-msg-window.py
@@ -13,65 +13,191 @@ Usage:
 
 Requirements:
     - Python 3.8+ (tkinter included)
-    - No external dependencies
+    - websockets (optional, for relay support): pip install websockets
 """
 
 import tkinter as tk
 import threading
+import asyncio
 import os
 import sys
+import json
 from pathlib import Path
 from datetime import datetime
 import subprocess
+
+# Optional websockets for relay
+try:
+    import websockets
+    HAS_WEBSOCKETS = True
+except ImportError:
+    HAS_WEBSOCKETS = False
 
 # === CONFIG ===
 
 DATACORE_ROOT = Path(os.environ.get("DATACORE_ROOT", Path.home() / "Data"))
 POLL_INTERVAL = 2  # seconds
+TOKEN_FILE = DATACORE_ROOT / ".datacore/state/relay-token"
+DEFAULT_RELAY = "wss://datacore-relay.fly.dev"
 
 
-def get_username() -> str:
-    """Get current user's identity from settings or environment."""
-    # Check environment override
-    if "DATACORE_USER" in os.environ:
-        return os.environ["DATACORE_USER"]
-
-    # Try to read from settings
+def get_settings() -> dict:
+    """Load settings from yaml."""
     settings_path = DATACORE_ROOT / ".datacore/settings.local.yaml"
     if settings_path.exists():
         try:
             import yaml
-            conf = yaml.safe_load(settings_path.read_text())
-            name = conf.get("identity", {}).get("name")
-            if name:
-                return name
+            return yaml.safe_load(settings_path.read_text()) or {}
         except:
             pass
+    return {}
 
-    # Fallback to system user
+
+def get_username() -> str:
+    """Get current user's identity from settings or environment."""
+    if "DATACORE_USER" in os.environ:
+        return os.environ["DATACORE_USER"]
+
+    conf = get_settings()
+    name = conf.get("identity", {}).get("name")
+    if name:
+        return name
+
     return os.environ.get("USER", "unknown")
 
 
 def get_default_space() -> str:
     """Get default space for sending messages."""
-    # Try settings first
-    settings_path = DATACORE_ROOT / ".datacore/settings.local.yaml"
-    if settings_path.exists():
-        try:
-            import yaml
-            conf = yaml.safe_load(settings_path.read_text())
-            space = conf.get("messaging", {}).get("default_space")
-            if space:
-                return space
-        except:
-            pass
+    conf = get_settings()
+    space = conf.get("messaging", {}).get("default_space")
+    if space:
+        return space
 
-    # Find first numbered space
     for p in sorted(DATACORE_ROOT.glob("[1-9]-*")):
         if p.is_dir():
             return p.name
 
     return "1-team"
+
+
+def get_relay_url() -> str:
+    """Get relay server URL from settings."""
+    conf = get_settings()
+    return conf.get("messaging", {}).get("relay", {}).get("url", DEFAULT_RELAY)
+
+
+def is_relay_enabled() -> bool:
+    """Check if relay is enabled in settings."""
+    conf = get_settings()
+    return conf.get("messaging", {}).get("relay", {}).get("enabled", False)
+
+
+def get_relay_token() -> str | None:
+    """Get stored relay token."""
+    if TOKEN_FILE.exists():
+        return TOKEN_FILE.read_text().strip()
+    return None
+
+
+class RelayClient:
+    """WebSocket client for relay server."""
+
+    def __init__(self, url: str, token: str, on_message=None, on_presence=None, on_status=None):
+        self.url = url
+        self.token = token
+        self.ws = None
+        self.username = None
+        self.online_users = []
+        self.on_message = on_message
+        self.on_presence = on_presence
+        self.on_status = on_status
+        self.running = False
+        self.loop = None
+
+    async def connect(self):
+        """Connect and authenticate with relay."""
+        try:
+            self.ws = await websockets.connect(self.url)
+
+            # Authenticate
+            await self.ws.send(json.dumps({
+                "type": "auth",
+                "token": self.token
+            }))
+
+            response = json.loads(await self.ws.recv())
+
+            if response.get("type") == "auth_error":
+                if self.on_status:
+                    self.on_status(f"Auth failed: {response.get('message')}")
+                return False
+
+            if response.get("type") == "auth_ok":
+                self.username = response.get("username")
+                self.online_users = response.get("online", [])
+                if self.on_status:
+                    self.on_status(f"Connected to relay as @{self.username}")
+                if self.on_presence:
+                    self.on_presence(self.online_users)
+                return True
+
+            return False
+        except Exception as e:
+            if self.on_status:
+                self.on_status(f"Connection failed: {e}")
+            return False
+
+    async def send_message(self, to: str, text: str, msg_id: str, priority: str = "normal") -> bool:
+        """Send message via relay."""
+        if not self.ws:
+            return False
+
+        try:
+            await self.ws.send(json.dumps({
+                "type": "send",
+                "to": to,
+                "text": text,
+                "msg_id": msg_id,
+                "priority": priority
+            }))
+
+            response = json.loads(await self.ws.recv())
+            return response.get("delivered", False)
+        except:
+            return False
+
+    async def listen(self):
+        """Listen for incoming messages."""
+        self.running = True
+        try:
+            async for message in self.ws:
+                if not self.running:
+                    break
+
+                data = json.loads(message)
+                msg_type = data.get("type")
+
+                if msg_type == "message":
+                    if self.on_message:
+                        self.on_message(data)
+
+                elif msg_type == "presence_change":
+                    self.online_users = data.get("online", [])
+                    if self.on_presence:
+                        self.on_presence(self.online_users)
+
+        except websockets.exceptions.ConnectionClosed:
+            if self.on_status:
+                self.on_status("Relay disconnected")
+        except Exception as e:
+            if self.on_status:
+                self.on_status(f"Relay error: {e}")
+
+    async def close(self):
+        """Close connection."""
+        self.running = False
+        if self.ws:
+            await self.ws.close()
 
 
 class MessageWindow:
@@ -81,14 +207,16 @@ class MessageWindow:
         self.username = get_username()
         self.default_space = get_default_space()
         self.seen_ids = set()
+        self.relay_client = None
+        self.relay_connected = False
 
         # Create window
         self.root = tk.Tk()
         self.root.title(f"Messages @{self.username}")
 
         # Window properties
-        self.root.attributes("-topmost", True)      # Always on top
-        self.root.attributes("-alpha", 0.95)        # Slight transparency
+        self.root.attributes("-topmost", True)
+        self.root.attributes("-alpha", 0.95)
 
         # Position: top-right corner
         screen_w = self.root.winfo_screenwidth()
@@ -106,12 +234,14 @@ class MessageWindow:
         self.unread_bg = "#2d2d30"
         self.input_bg = "#333333"
         self.online_color = "#4ec9b0"
+        self.relay_color = "#c586c0"
 
         self.root.configure(bg=self.bg_color)
 
         self._build_ui()
         self._load_existing_messages()
         self._start_watcher()
+        self._start_relay()
 
     def _build_ui(self):
         """Build the UI components."""
@@ -137,6 +267,26 @@ class MessageWindow:
             font=("Monaco", 11),
         )
         self.status_dot.pack(side=tk.LEFT)
+
+        # Relay indicator
+        self.relay_indicator = tk.Label(
+            self.header,
+            text="",
+            bg=self.bg_color,
+            fg=self.relay_color,
+            font=("Monaco", 9),
+        )
+        self.relay_indicator.pack(side=tk.RIGHT)
+
+        # Online users label
+        self.online_label = tk.Label(
+            self.header,
+            text="",
+            bg=self.bg_color,
+            fg=self.muted_color,
+            font=("Monaco", 9),
+        )
+        self.online_label.pack(side=tk.RIGHT, padx=(0, 10))
 
         # Messages area
         self.messages_frame = tk.Frame(self.root, bg=self.bg_color)
@@ -166,6 +316,7 @@ class MessageWindow:
         self.messages_text.tag_configure("sender", foreground=self.accent_color, font=("Monaco", 11, "bold"))
         self.messages_text.tag_configure("sender_you", foreground="#4ec9b0", font=("Monaco", 11, "bold"))
         self.messages_text.tag_configure("sender_claude", foreground="#c586c0", font=("Monaco", 11, "bold"))
+        self.messages_text.tag_configure("sender_relay", foreground="#dcdcaa", font=("Monaco", 11, "bold"))
         self.messages_text.tag_configure("time", foreground=self.muted_color, font=("Monaco", 9))
         self.messages_text.tag_configure("unread_marker", foreground="#f48771")
         self.messages_text.tag_configure("message_text", foreground=self.fg_color)
@@ -228,7 +379,7 @@ class MessageWindow:
             self.input_field.config(fg=self.muted_color)
 
     def add_message(self, sender: str, text: str, time_str: str, unread: bool = False,
-                    priority: str = "normal", outgoing: bool = False):
+                    priority: str = "normal", outgoing: bool = False, via_relay: bool = False):
         """Add a message to the display."""
         self.messages_text.config(state=tk.NORMAL)
 
@@ -243,11 +394,14 @@ class MessageWindow:
             self.messages_text.insert(tk.END, f"@{sender} ", "sender_you")
         elif sender == "claude":
             self.messages_text.insert(tk.END, f"@{sender} ", "sender_claude")
+        elif via_relay:
+            self.messages_text.insert(tk.END, f"@{sender} ", "sender_relay")
         else:
             self.messages_text.insert(tk.END, f"@{sender} ", "sender")
 
-        # Timestamp
-        self.messages_text.insert(tk.END, f"{time_str}\n", "time")
+        # Timestamp and relay indicator
+        relay_marker = " ↗" if via_relay else ""
+        self.messages_text.insert(tk.END, f"{time_str}{relay_marker}\n", "time")
 
         # Priority indicator
         if priority == "high":
@@ -329,9 +483,18 @@ class MessageWindow:
             return
 
         # Write to inbox
-        success = self._write_to_inbox(recipient, msg_text)
+        msg_id = self._write_to_inbox(recipient, msg_text)
 
-        if success:
+        if msg_id:
+            # Try sending via relay if connected
+            via_relay = False
+            if self.relay_connected and self.relay_client:
+                # Send via relay in background
+                def send_relay():
+                    asyncio.run(self.relay_client.send_message(recipient, msg_text, msg_id))
+                threading.Thread(target=send_relay, daemon=True).start()
+                via_relay = True
+
             # Show in UI
             self.add_message(
                 f"you→{recipient}",
@@ -339,13 +502,15 @@ class MessageWindow:
                 datetime.now().strftime("%H:%M"),
                 unread=False,
                 outgoing=True,
+                via_relay=via_relay,
             )
 
             # Clear input
             self.input_field.delete(0, tk.END)
 
             # Update status
-            self.status_label.config(text=f"✓ Sent to @{recipient}")
+            delivery = "relay" if via_relay else "local"
+            self.status_label.config(text=f"✓ Sent to @{recipient} ({delivery})")
             self.root.after(3000, lambda: self.status_label.config(text=f"Space: {self.default_space}"))
         else:
             self._show_error("Failed to send")
@@ -358,8 +523,8 @@ class MessageWindow:
             fg=self.muted_color
         ))
 
-    def _write_to_inbox(self, to: str, text: str) -> bool:
-        """Write message to recipient's org inbox."""
+    def _write_to_inbox(self, to: str, text: str) -> str | None:
+        """Write message to recipient's org inbox. Returns message ID."""
         try:
             # Find or create inbox
             inbox_dir = DATACORE_ROOT / self.default_space / "org/inboxes"
@@ -387,11 +552,43 @@ class MessageWindow:
                 f.write(entry)
 
             self.seen_ids.add(msg_id)
-            return True
+            return msg_id
 
         except Exception as e:
             print(f"Error writing message: {e}", file=sys.stderr)
-            return False
+            return None
+
+    def _write_from_relay(self, from_user: str, text: str, priority: str = "normal") -> str | None:
+        """Write message received from relay to local inbox."""
+        try:
+            inbox_dir = DATACORE_ROOT / self.default_space / "org/inboxes"
+            inbox_dir.mkdir(parents=True, exist_ok=True)
+            inbox = inbox_dir / f"{self.username}.org"
+
+            now = datetime.now()
+            msg_id = f"msg-{now.strftime('%Y%m%d-%H%M%S')}-{from_user}"
+            timestamp = now.strftime("[%Y-%m-%d %a %H:%M]")
+
+            entry = f"""
+* MESSAGE {timestamp} :unread:
+:PROPERTIES:
+:ID: {msg_id}
+:FROM: {from_user}
+:TO: {self.username}
+:PRIORITY: {priority}
+:SOURCE: relay
+:END:
+{text}
+"""
+
+            with open(inbox, "a") as f:
+                f.write(entry)
+
+            return msg_id
+
+        except Exception as e:
+            print(f"Error writing relay message: {e}", file=sys.stderr)
+            return None
 
     def _load_existing_messages(self):
         """Load last N messages from inbox on startup."""
@@ -461,6 +658,7 @@ class MessageWindow:
                 "time": time_str,
                 "unread": is_unread,
                 "priority": props.get("priority", "normal"),
+                "source": props.get("source", "local"),
             }
         except Exception as e:
             print(f"Error parsing message: {e}", file=sys.stderr)
@@ -495,14 +693,96 @@ class MessageWindow:
                                 m.get("time", "now"),
                                 unread=m.get("unread", True),
                                 priority=m.get("priority", "normal"),
+                                via_relay=m.get("source") == "relay",
                             ))
             except Exception as e:
                 print(f"Watcher error: {e}", file=sys.stderr)
+
+    def _start_relay(self):
+        """Start relay connection if enabled."""
+        if not HAS_WEBSOCKETS:
+            self.relay_indicator.config(text="(no websockets)")
+            return
+
+        if not is_relay_enabled():
+            self.relay_indicator.config(text="(local only)")
+            return
+
+        token = get_relay_token()
+        if not token:
+            self.relay_indicator.config(text="(not logged in)")
+            return
+
+        # Start relay in background thread
+        self.relay_thread = threading.Thread(target=self._relay_loop, daemon=True)
+        self.relay_thread.start()
+
+    def _relay_loop(self):
+        """Run relay client in background."""
+        async def run_relay():
+            def on_message(data):
+                """Handle incoming relay message."""
+                from_user = data.get("from", "?")
+                text = data.get("text", "")
+                priority = data.get("priority", "normal")
+
+                # Write to local inbox
+                msg_id = self._write_from_relay(from_user, text, priority)
+
+                if msg_id and msg_id not in self.seen_ids:
+                    self.seen_ids.add(msg_id)
+
+                    # Update UI
+                    self.root.after(0, lambda: self.add_message(
+                        from_user,
+                        text,
+                        datetime.now().strftime("%H:%M"),
+                        unread=True,
+                        priority=priority,
+                        via_relay=True,
+                    ))
+
+            def on_presence(online_users):
+                """Handle presence update."""
+                count = len(online_users)
+                self.root.after(0, lambda: self.online_label.config(
+                    text=f"{count} online" if count > 0 else ""
+                ))
+
+            def on_status(status):
+                """Handle status update."""
+                self.root.after(0, lambda: self.relay_indicator.config(text=f"({status[:20]})"))
+
+            self.relay_client = RelayClient(
+                get_relay_url(),
+                get_relay_token(),
+                on_message=on_message,
+                on_presence=on_presence,
+                on_status=on_status,
+            )
+
+            if await self.relay_client.connect():
+                self.relay_connected = True
+                self.root.after(0, lambda: self.relay_indicator.config(
+                    text="● relay",
+                    fg=self.online_color
+                ))
+                await self.relay_client.listen()
+            else:
+                self.relay_connected = False
+                self.root.after(0, lambda: self.relay_indicator.config(
+                    text="(relay failed)",
+                    fg="#f48771"
+                ))
+
+        asyncio.run(run_relay())
 
     def run(self):
         """Start the application."""
         print(f"Datacore Messages - @{self.username}")
         print(f"Watching: {DATACORE_ROOT}/*/org/inboxes/{self.username}.org")
+        if is_relay_enabled():
+            print(f"Relay: {get_relay_url()}")
         print("Window opened. Press Cmd+W or Escape to minimize.")
         self.root.mainloop()
 
