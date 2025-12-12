@@ -149,6 +149,21 @@ The reply is:
 1. Saved to the recipient's inbox (`gregor.org`)
 2. Sent via relay for real-time delivery (if connected)
 
+### Marking Messages from Claude
+
+```bash
+# Mark a message as TODO
+python3 hooks/mark-message.py 151230 todo
+
+# Mark as done
+python3 hooks/mark-message.py 151230 done
+
+# Mark as read (clear status)
+python3 hooks/mark-message.py 151230 read
+```
+
+The ID is shown in the hook output `[msg-id: msg-20251212-151230-tex]` - use any unique part.
+
 ## How It Works
 
 ### Message Flow

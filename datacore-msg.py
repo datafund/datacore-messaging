@@ -433,6 +433,7 @@ class MessageWindow(QMainWindow):
         self.relay = None
         self.relay_client_ws = None
         self.relay_connected = False
+        self.current_view = "mine"  # Track current view: "mine" or "todos"
         self.bridge = SignalBridge()
 
         self.bridge.message_received.connect(self.add_message)
@@ -589,11 +590,15 @@ class MessageWindow(QMainWindow):
             return True
         elif cmd_name == "/todo" and len(parts) >= 2:
             # /todo <id> - mark as TODO
-            self._mark_message(parts[1], "todo")
+            self._mark_message_by_id(parts[1], "todo")
             return True
         elif cmd_name == "/done" and len(parts) >= 2:
             # /done <id> - mark as done
-            self._mark_message(parts[1], "done")
+            self._mark_message_by_id(parts[1], "done")
+            return True
+        elif cmd_name == "/read" and len(parts) >= 2:
+            # /read <id> - mark as read (clear unread)
+            self._mark_message_by_id(parts[1], "clear")
             return True
         elif cmd_name == "/clear":
             self.messages_area.clear()
@@ -625,8 +630,11 @@ class MessageWindow(QMainWindow):
         msg_id = msg_data.get("id", "")
         if msg_id:
             self._update_message_status(msg_id, new_status)
-            # Refresh the display
-            self._show_my_messages()
+            # Refresh based on current view
+            if self.current_view == "todos":
+                self._show_todo_messages()
+            else:
+                self._show_my_messages()
 
     def _update_message_status(self, msg_id: str, action: str):
         """Update message status in org file."""
@@ -659,6 +667,7 @@ class MessageWindow(QMainWindow):
 
     def _show_my_messages(self):
         """Show all unread messages for current user as clickable widgets."""
+        self.current_view = "mine"
         self._clear_messages_display()
         messages = []
 
@@ -706,13 +715,13 @@ class MessageWindow(QMainWindow):
 
     def _show_help(self):
         """Show available commands."""
-        cursor = self.messages_area.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self._clear_messages_display()
 
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor("#c586c0"))
-        fmt.setFontWeight(700)
-        cursor.insertText("\n─── Commands ───\n", fmt)
+        # Header
+        header = QLabel("─── Commands ───")
+        header.setStyleSheet("color: #c586c0; font-weight: bold; padding: 4px;")
+        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.messages_layout.insertWidget(0, header)
 
         commands = [
             ("@user message", "Send message to user"),
@@ -724,53 +733,42 @@ class MessageWindow(QMainWindow):
             ("/help", "Show this help"),
         ]
 
-        # Also show click instructions
-        cursor.insertText("\n", fmt)
-        fmt.setForeground(QColor("#666"))
-        cursor.insertText("Click message to cycle: unread → todo → done\n", fmt)
-        cursor.insertText("Use checkbox to mark done\n", fmt)
-
+        # Commands list
+        help_text = ""
         for cmd, desc in commands:
-            fmt = QTextCharFormat()
-            fmt.setForeground(QColor("#4ec9b0"))
-            cursor.insertText(f"  {cmd:<18}", fmt)
+            help_text += f"<span style='color: #4ec9b0;'>{cmd}</span> <span style='color: #666;'>- {desc}</span><br>"
 
-            fmt = QTextCharFormat()
-            fmt.setForeground(QColor("#666"))
-            cursor.insertText(f" {desc}\n", fmt)
+        help_text += "<br><span style='color: #666;'>Click message to change status</span>"
 
-        cursor.insertText("\n")
-        self.messages_area.setTextCursor(cursor)
-        self.messages_area.ensureCursorVisible()
+        help_label = QLabel(help_text)
+        help_label.setStyleSheet("padding: 10px; font-size: 12px;")
+        help_label.setTextFormat(Qt.TextFormat.RichText)
+        self.messages_layout.insertWidget(1, help_label)
+
         self.input_field.clear()
 
     def _show_online(self):
         """Show online users."""
-        cursor = self.messages_area.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self._clear_messages_display()
 
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor("#c586c0"))
-        fmt.setFontWeight(700)
-        cursor.insertText("\n─── Online Users ───\n", fmt)
+        header = QLabel("─── Online Users ───")
+        header.setStyleSheet("color: #c586c0; font-weight: bold; padding: 4px;")
+        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.messages_layout.insertWidget(0, header)
 
-        # Request presence from relay
         if self.relay_connected:
-            fmt = QTextCharFormat()
-            fmt.setForeground(QColor("#4ec9b0"))
-            cursor.insertText(f"  (checking relay...)\n", fmt)
+            status = QLabel("Connected to relay\n(checking...)")
+            status.setStyleSheet("color: #4ec9b0; padding: 10px;")
         else:
-            fmt = QTextCharFormat()
-            fmt.setForeground(QColor("#f48771"))
-            cursor.insertText("  Not connected to relay\n", fmt)
+            status = QLabel("Not connected to relay")
+            status.setStyleSheet("color: #f48771; padding: 10px;")
 
-        cursor.insertText("\n")
-        self.messages_area.setTextCursor(cursor)
-        self.messages_area.ensureCursorVisible()
+        self.messages_layout.insertWidget(1, status)
         self.input_field.clear()
 
     def _show_todo_messages(self):
         """Show messages marked as :todo: as clickable widgets."""
+        self.current_view = "todos"
         self._clear_messages_display()
         todo_msgs = []
         done_count = 0
@@ -827,41 +825,27 @@ class MessageWindow(QMainWindow):
 
         self.input_field.clear()
 
-    def _mark_message(self, msg_id_part: str, action: str):
-        """Mark a message with :todo:, :done:, or clear tags."""
-        cursor = self.messages_area.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-
-        # Find message by partial ID match
+    def _mark_message_by_id(self, msg_id_part: str, action: str):
+        """Mark a message by partial ID with :todo:, :done:, or clear tags."""
+        import re
         found = False
+
         for inbox in DATACORE_ROOT.glob(f"*/org/inboxes/{self.username}*.org"):
             try:
                 content = inbox.read_text()
-                # Find message with matching ID
                 if msg_id_part in content:
-                    import re
-                    # Match the header line with this message ID
                     pattern = rf'(\* MESSAGE \[[^\]]+\])([^\n]*)(.*?:ID: [^\n]*{re.escape(msg_id_part)}[^\n]*)'
 
                     def replace_tags(match):
                         header = match.group(1)
                         tags = match.group(2)
                         rest = match.group(3)
+                        tags = re.sub(r':(?:unread|todo|done):', '', tags).strip()
 
-                        # Remove existing status tags
-                        tags = re.sub(r':(?:unread|todo|done):', '', tags)
-                        tags = tags.strip()
-
-                        # Add new tag
                         if action == "todo":
-                            new_tag = ":todo:"
+                            return f"{header} :todo:{rest}"
                         elif action == "done":
-                            new_tag = ":done:"
-                        else:  # clear
-                            new_tag = ""
-
-                        if new_tag:
-                            return f"{header} {new_tag}{rest}"
+                            return f"{header} :done:{rest}"
                         else:
                             return f"{header}{rest}"
 
@@ -869,21 +853,21 @@ class MessageWindow(QMainWindow):
                     if count > 0:
                         inbox.write_text(new_content)
                         found = True
-
-                        fmt = QTextCharFormat()
-                        fmt.setForeground(QColor("#4ec9b0"))
-                        cursor.insertText(f"\n✓ Marked as {action}: ...{msg_id_part}\n\n", fmt)
                         break
-            except Exception as e:
+            except:
                 pass
 
-        if not found:
-            fmt = QTextCharFormat()
-            fmt.setForeground(QColor("#f48771"))
-            cursor.insertText(f"\n✗ Message not found: {msg_id_part}\n\n", fmt)
+        # Show result and refresh
+        self._clear_messages_display()
+        if found:
+            msg = QLabel(f"✓ Marked as {action}: ...{msg_id_part}")
+            msg.setStyleSheet("color: #4ec9b0; padding: 20px;")
+        else:
+            msg = QLabel(f"✗ Message not found: {msg_id_part}")
+            msg.setStyleSheet("color: #f48771; padding: 20px;")
+        msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.messages_layout.insertWidget(0, msg)
 
-        self.messages_area.setTextCursor(cursor)
-        self.messages_area.ensureCursorVisible()
         self.input_field.clear()
 
     def _send_message(self):
