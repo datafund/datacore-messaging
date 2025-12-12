@@ -103,6 +103,17 @@ Type in the input field:
 
 ## Claude Code Integration
 
+### How It Works
+
+**Important**: Claude Code doesn't have a persistent connection to the relay. Messages are checked via a hook that runs when you submit a prompt to Claude.
+
+Flow:
+1. Someone sends `@tex-claude do something` in GUI
+2. Message is stored in `tex-claude.org` with `:unread:` tag
+3. When you next interact with Claude Code, the hook checks the inbox
+4. Unread messages are shown to Claude and marked as read
+5. Claude can reply using `send-reply.py`
+
 ### Receiving Messages
 
 The installer adds a hook that shows new messages when you interact with Claude:
@@ -112,10 +123,14 @@ The installer adds a hook that shows new messages when you interact with Claude:
 
 From @gregor (14:30):
   Can you help debug the auth flow?
+  [msg-id: msg-20251212-143000-gregor]
 
 ---
-Reply using the messaging system or directly in conversation.
+To reply: use hooks/send-reply.py <user> <message>
+Messages above are now marked as read.
 ```
+
+After displaying, messages are marked as read (`:unread:` tag removed from org file).
 
 ### Sending Replies from Claude
 
@@ -123,6 +138,10 @@ Reply using the messaging system or directly in conversation.
 # Claude can reply via the send-reply script
 python3 hooks/send-reply.py gregor "Fixed! Check the PR."
 ```
+
+The reply is:
+1. Saved to the recipient's inbox (`gregor.org`)
+2. Sent via relay for real-time delivery (if connected)
 
 ## How It Works
 

@@ -32,7 +32,6 @@ from datetime import datetime
 
 # Config
 DATACORE_ROOT = Path(os.environ.get("DATACORE_ROOT", Path.home() / "Data"))
-STATE_FILE = Path("/tmp/datacore-messaging-last-check")
 
 def get_username():
     """Get username from settings or environment."""
@@ -111,15 +110,25 @@ def parse_messages(content):
 
     return messages
 
-def get_last_seen_ids():
-    """Get list of message IDs we've already shown."""
-    if STATE_FILE.exists():
-        return set(STATE_FILE.read_text().strip().split("\n"))
-    return set()
+def mark_messages_as_read(inbox_path, message_ids):
+    """Remove :unread: tag from messages in the org file."""
+    if not inbox_path.exists():
+        return
 
-def save_seen_ids(seen_ids):
-    """Save message IDs we've shown."""
-    STATE_FILE.write_text("\n".join(seen_ids))
+    content = inbox_path.read_text()
+    modified = False
+
+    for msg_id in message_ids:
+        # Find the message block and remove :unread: tag
+        # Pattern: MESSAGE [timestamp] :unread: followed by :ID: msg_id
+        pattern = rf'(\* MESSAGE \[[^\]]+\]) :unread:(.*?:ID: {re.escape(msg_id)})'
+        if re.search(pattern, content, re.DOTALL):
+            content = re.sub(pattern, r'\1\2', content, flags=re.DOTALL)
+            modified = True
+
+    if modified:
+        inbox_path.write_text(content)
+
 
 def main():
     inbox = get_claude_inbox()
@@ -138,16 +147,11 @@ def main():
     if not messages:
         sys.exit(0)
 
-    # Filter to only new messages
-    seen_ids = get_last_seen_ids()
-    new_messages = [m for m in messages if m["id"] not in seen_ids]
+    # All unread messages are new (we mark them read after showing)
+    new_messages = messages
 
     if not new_messages:
         sys.exit(0)
-
-    # Mark all as seen
-    all_ids = seen_ids | {m["id"] for m in messages}
-    save_seen_ids(all_ids)
 
     # Output new messages to inject into context
     username = get_username()
@@ -157,10 +161,15 @@ def main():
         priority_marker = " [!]" if msg["priority"] == "high" else ""
         print(f"From @{msg['from']} ({msg['time']}){priority_marker}:")
         print(f"  {msg['text']}")
+        print(f"  [msg-id: {msg['id']}]")
         print()
 
     print("---")
-    print("Reply using the messaging system or directly in conversation.")
+    print("To reply: use hooks/send-reply.py <user> <message>")
+    print("Messages above are now marked as read.")
+
+    # Mark messages as read in the org file
+    mark_messages_as_read(inbox, [m["id"] for m in new_messages])
 
     sys.exit(0)
 
