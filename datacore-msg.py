@@ -433,19 +433,29 @@ class MessageWindow(QMainWindow):
 
     def _handle_command(self, cmd: str) -> bool:
         """Handle /commands. Returns True if handled."""
-        cmd = cmd.lower().strip()
+        parts = cmd.strip().split(maxsplit=2)
+        cmd_name = parts[0].lower()
 
-        if cmd in ("/my-messages", "/messages", "/inbox"):
+        if cmd_name in ("/my-messages", "/messages", "/inbox"):
             self._show_my_messages()
             return True
-        elif cmd == "/clear":
+        elif cmd_name == "/todo":
+            self._show_todo_messages()
+            return True
+        elif cmd_name == "/mark" and len(parts) >= 2:
+            # /mark <id> [todo|done|clear]
+            msg_id = parts[1]
+            action = parts[2].lower() if len(parts) > 2 else "todo"
+            self._mark_message(msg_id, action)
+            return True
+        elif cmd_name == "/clear":
             self.messages_area.clear()
             self.input_field.clear()
             return True
-        elif cmd in ("/help", "/?"):
+        elif cmd_name in ("/help", "/?"):
             self._show_help()
             return True
-        elif cmd == "/online":
+        elif cmd_name == "/online":
             self._show_online()
             return True
         return False
@@ -538,6 +548,9 @@ class MessageWindow(QMainWindow):
             ("@user message", "Send message to user"),
             ("@claude task", "Send task to your Claude"),
             ("/my-messages", "Show unread messages"),
+            ("/todo", "Show TODO messages"),
+            ("/mark <id> todo", "Mark message as TODO"),
+            ("/mark <id> done", "Mark message as done"),
             ("/online", "Show online users"),
             ("/clear", "Clear message area"),
             ("/help", "Show this help"),
@@ -578,6 +591,156 @@ class MessageWindow(QMainWindow):
             cursor.insertText("  Not connected to relay\n", fmt)
 
         cursor.insertText("\n")
+        self.messages_area.setTextCursor(cursor)
+        self.messages_area.ensureCursorVisible()
+        self.input_field.clear()
+
+    def _show_todo_messages(self):
+        """Show messages marked as :todo:"""
+        cursor = self.messages_area.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor("#dcdcaa"))
+        fmt.setFontWeight(700)
+        cursor.insertText("\n─── TODO Messages ───\n", fmt)
+
+        todo_msgs = []
+        done_msgs = []
+
+        # Check all inboxes for this user
+        for inbox in DATACORE_ROOT.glob(f"*/org/inboxes/{self.username}.org"):
+            try:
+                content = inbox.read_text()
+                for block in content.split("\n* MESSAGE ")[1:]:
+                    msg = self._parse_message(block)
+                    if msg:
+                        msg["inbox"] = str(inbox)
+                        if msg.get("todo"):
+                            todo_msgs.append(msg)
+                        elif msg.get("done"):
+                            done_msgs.append(msg)
+            except:
+                pass
+
+        # Also check claude inbox
+        for inbox in DATACORE_ROOT.glob(f"*/org/inboxes/{self.username}-claude.org"):
+            try:
+                content = inbox.read_text()
+                for block in content.split("\n* MESSAGE ")[1:]:
+                    msg = self._parse_message(block)
+                    if msg:
+                        msg["inbox"] = str(inbox)
+                        msg["to_claude"] = True
+                        if msg.get("todo"):
+                            todo_msgs.append(msg)
+                        elif msg.get("done"):
+                            done_msgs.append(msg)
+            except:
+                pass
+
+        if todo_msgs:
+            for msg in sorted(todo_msgs, key=lambda m: m.get("id", "")):
+                fmt = QTextCharFormat()
+                fmt.setForeground(QColor("#dcdcaa"))
+                cursor.insertText("☐ ", fmt)
+
+                fmt = QTextCharFormat()
+                fmt.setForeground(QColor("#569cd6"))
+                fmt.setFontWeight(700)
+                cursor.insertText(f"@{msg['from']} ", fmt)
+
+                if msg.get("to_claude"):
+                    fmt = QTextCharFormat()
+                    fmt.setForeground(QColor("#c586c0"))
+                    cursor.insertText("→claude ", fmt)
+
+                fmt = QTextCharFormat()
+                fmt.setForeground(QColor("#666"))
+                cursor.insertText(f"{msg.get('time', '')}\n", fmt)
+
+                fmt = QTextCharFormat()
+                fmt.setForeground(QColor("#d4d4d4"))
+                cursor.insertText(f"  {msg['text'][:120]}\n", fmt)
+
+                # Show short ID for marking
+                short_id = msg['id'].split('-')[-1] if msg['id'] else ""
+                fmt = QTextCharFormat()
+                fmt.setForeground(QColor("#666"))
+                cursor.insertText(f"  /mark {short_id} done\n", fmt)
+        else:
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor("#4ec9b0"))
+            cursor.insertText("  No TODO messages\n", fmt)
+
+        if done_msgs:
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor("#666"))
+            cursor.insertText(f"\n  ({len(done_msgs)} done)\n", fmt)
+
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor("#666"))
+        cursor.insertText(f"─── {len(todo_msgs)} todo ───\n\n", fmt)
+
+        self.messages_area.setTextCursor(cursor)
+        self.messages_area.ensureCursorVisible()
+        self.input_field.clear()
+
+    def _mark_message(self, msg_id_part: str, action: str):
+        """Mark a message with :todo:, :done:, or clear tags."""
+        cursor = self.messages_area.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+
+        # Find message by partial ID match
+        found = False
+        for inbox in DATACORE_ROOT.glob(f"*/org/inboxes/{self.username}*.org"):
+            try:
+                content = inbox.read_text()
+                # Find message with matching ID
+                if msg_id_part in content:
+                    import re
+                    # Match the header line with this message ID
+                    pattern = rf'(\* MESSAGE \[[^\]]+\])([^\n]*)(.*?:ID: [^\n]*{re.escape(msg_id_part)}[^\n]*)'
+
+                    def replace_tags(match):
+                        header = match.group(1)
+                        tags = match.group(2)
+                        rest = match.group(3)
+
+                        # Remove existing status tags
+                        tags = re.sub(r':(?:unread|todo|done):', '', tags)
+                        tags = tags.strip()
+
+                        # Add new tag
+                        if action == "todo":
+                            new_tag = ":todo:"
+                        elif action == "done":
+                            new_tag = ":done:"
+                        else:  # clear
+                            new_tag = ""
+
+                        if new_tag:
+                            return f"{header} {new_tag}{rest}"
+                        else:
+                            return f"{header}{rest}"
+
+                    new_content, count = re.subn(pattern, replace_tags, content, flags=re.DOTALL)
+                    if count > 0:
+                        inbox.write_text(new_content)
+                        found = True
+
+                        fmt = QTextCharFormat()
+                        fmt.setForeground(QColor("#4ec9b0"))
+                        cursor.insertText(f"\n✓ Marked as {action}: ...{msg_id_part}\n\n", fmt)
+                        break
+            except Exception as e:
+                pass
+
+        if not found:
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor("#f48771"))
+            cursor.insertText(f"\n✗ Message not found: {msg_id_part}\n\n", fmt)
+
         self.messages_area.setTextCursor(cursor)
         self.messages_area.ensureCursorVisible()
         self.input_field.clear()
@@ -691,6 +854,8 @@ class MessageWindow(QMainWindow):
             lines = block.split("\n")
             header = lines[0]
             is_unread = ":unread:" in header
+            is_todo = ":todo:" in header
+            is_done = ":done:" in header
 
             time_str = ""
             if "[" in header and "]" in header:
@@ -722,7 +887,9 @@ class MessageWindow(QMainWindow):
                 "from": props.get("from", "?"),
                 "text": "\n".join(text_lines).strip(),
                 "time": time_str,
-                "unread": is_unread
+                "unread": is_unread,
+                "todo": is_todo,
+                "done": is_done
             }
         except:
             return None

@@ -69,9 +69,19 @@ Type in the input field:
 | Command | Description |
 |---------|-------------|
 | `/my-messages` | Show all unread messages |
+| `/todo` | Show messages marked as TODO |
+| `/mark <id> todo` | Mark a message as TODO |
+| `/mark <id> done` | Mark a message as done |
+| `/mark <id> clear` | Remove TODO/done status |
 | `/online` | Show online users |
 | `/clear` | Clear message display |
 | `/help` | Show available commands |
+
+**Message workflow:**
+1. Receive a message → shows as unread (●)
+2. `/mark <id> todo` → add to your TODO list (☐)
+3. `/mark <id> done` → mark as completed
+4. `/todo` → see all pending TODOs
 
 ### GUI Features
 
