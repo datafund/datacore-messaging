@@ -690,6 +690,9 @@ class MessageWindow(QMainWindow):
             else:
                 self._show_status()
             return True
+        elif cmd_name == "/context" and len(parts) >= 2:
+            self._show_context(parts[1])
+            return True
         return False
 
     def _on_status_change(self, msg_id: str, current_status: str):
@@ -779,10 +782,12 @@ class MessageWindow(QMainWindow):
         commands = [
             ("@user message", "Send message to user"),
             ("@claude task", "Send task to your Claude"),
+            ("@user >id text", "Reply to message (thread)"),
             ("/mine", "Show unread messages"),
             ("/todos", "Show TODO messages"),
+            ("/context <id>", "Show thread context"),
             ("/online", "Show online users"),
-            ("/status [val]", "Show/set status (busy/away/focusing)"),
+            ("/status [val]", "Set status (busy/away/focusing)"),
             ("/relay", "Show relay connection info"),
             ("/clear", "Clear display"),
         ]
@@ -864,6 +869,86 @@ class MessageWindow(QMainWindow):
             self._status_change_pending = new_status
         else:
             self._status_change_pending = new_status
+
+    def _show_context(self, msg_id_fragment: str):
+        """Show conversation context for a message or thread."""
+        # Find the message and its thread
+        target_msg = None
+        thread_id = None
+
+        for inbox in DATACORE_ROOT.glob("*/org/inboxes/*.org"):
+            try:
+                content = inbox.read_text()
+                if msg_id_fragment not in content:
+                    continue
+                for block in content.split("\n* MESSAGE ")[1:]:
+                    if msg_id_fragment in block:
+                        target_msg = self._parse_message(block)
+                        if target_msg:
+                            thread_id = target_msg.get("thread")
+                            if not thread_id:
+                                # No thread - just show this message
+                                thread_id = f"thread-{target_msg['id']}"
+                        break
+            except:
+                pass
+            if target_msg:
+                break
+
+        if not target_msg:
+            self._add_text_to_stream(f"  Message not found: {msg_id_fragment}", "#f48771")
+            self.input_field.clear()
+            return
+
+        # Find all messages in this thread
+        thread_messages = []
+        for inbox in DATACORE_ROOT.glob("*/org/inboxes/*.org"):
+            try:
+                content = inbox.read_text()
+                for block in content.split("\n* MESSAGE ")[1:]:
+                    msg = self._parse_message(block)
+                    if msg:
+                        # Include if in same thread or is the target
+                        if msg.get("thread") == thread_id or msg["id"] == target_msg["id"]:
+                            thread_messages.append(msg)
+                        # Also include parent messages
+                        elif msg["id"] == target_msg.get("reply_to"):
+                            thread_messages.append(msg)
+            except:
+                pass
+
+        # Sort by message ID (chronological)
+        thread_messages = sorted(thread_messages, key=lambda m: m.get("id", ""))
+
+        # Remove duplicates
+        seen = set()
+        unique_msgs = []
+        for msg in thread_messages:
+            if msg["id"] not in seen:
+                seen.add(msg["id"])
+                unique_msgs.append(msg)
+
+        self._add_text_to_stream(f"─── Thread ({len(unique_msgs)} messages) ───", "#c586c0", bold=True)
+
+        for msg in unique_msgs:
+            is_target = msg["id"] == target_msg["id"] or msg_id_fragment in msg["id"]
+            prefix = "► " if is_target else "  "
+            color = "#dcdcaa" if is_target else "#569cd6"
+
+            # Show reply indicator
+            reply_info = ""
+            if msg.get("reply_to"):
+                reply_info = " ↩"
+
+            self._add_text_to_stream(
+                f"{prefix}@{msg['from']} ({msg.get('time', '?')}){reply_info}",
+                color
+            )
+            # Truncate long messages
+            text = msg["text"][:100] + "..." if len(msg["text"]) > 100 else msg["text"]
+            self._add_text_to_stream(f"    {text}", "#d4d4d4")
+
+        self.input_field.clear()
 
     def _show_relay_info(self):
         """Show current relay connection info."""

@@ -71,6 +71,7 @@ Type in the input field:
 |---------|-------------|
 | `/mine` | Show my unread messages |
 | `/todos` | Show my TODO messages |
+| `/context <id>` | Show thread context for a message |
 | `/online` | Show online users with status |
 | `/status` | Show your current status |
 | `/status <val>` | Set status: online, busy, away, focusing |
