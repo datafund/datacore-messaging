@@ -70,10 +70,18 @@ Type in the input field:
 |---------|-------------|
 | `/mine` | Show my unread messages |
 | `/todos` | Show my TODO messages |
-| `/online` | Show online users |
+| `/online` | Show online users with status |
+| `/status` | Show your current status |
+| `/status <val>` | Set status: online, busy, away, focusing |
 | `/relay` | Show relay connection info |
 | `/clear` | Clear display |
 | `/help` | Show available commands |
+
+**Presence Status:**
+- 🟢 online - Available
+- 🔴 busy - Do not disturb
+- 🟡 away - Stepped away
+- 🟣 focusing - Deep work mode
 
 **Clickable messages:**
 - Click on a message to cycle: unread → todo → done → clear

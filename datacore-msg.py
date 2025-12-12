@@ -125,6 +125,7 @@ class RelayUser:
     ws: web.WebSocketResponse
     connected_at: float = field(default_factory=time.time)
     claude_whitelist: list = field(default_factory=list)
+    status: str = "online"  # online, busy, away, focusing
 
 
 class EmbeddedRelay:
@@ -175,7 +176,9 @@ class EmbeddedRelay:
         return False
 
     async def broadcast_presence(self, username: str, status: str):
-        online = list(self.users.keys())
+        """Broadcast presence/status change to all connected users."""
+        # Build online list with statuses
+        online_with_status = {u: self.users[u].status for u in self.users}
         for user in list(self.users.values()):
             if user.username != username:
                 try:
@@ -183,7 +186,8 @@ class EmbeddedRelay:
                         "type": "presence_change",
                         "user": username,
                         "status": status,
-                        "online": online
+                        "online": list(self.users.keys()),
+                        "statuses": online_with_status
                     })
                 except:
                     pass
@@ -220,18 +224,23 @@ class EmbeddedRelay:
                             except:
                                 pass
 
+                        initial_status = data.get("status", "online")
                         self.users[username] = RelayUser(
                             username=username,
                             ws=ws,
-                            claude_whitelist=data.get("claude_whitelist", [])
+                            claude_whitelist=data.get("claude_whitelist", []),
+                            status=initial_status
                         )
 
+                        # Build online list with statuses
+                        online_with_status = {u: self.users[u].status for u in self.users}
                         await ws.send_json({
                             "type": "auth_ok",
                             "username": username,
-                            "online": list(self.users.keys())
+                            "online": list(self.users.keys()),
+                            "statuses": online_with_status
                         })
-                        await self.broadcast_presence(username, "online")
+                        await self.broadcast_presence(username, initial_status)
 
                     elif msg_type == "send" and username:
                         to_user = data.get("to", "").lstrip("@")
@@ -254,7 +263,19 @@ class EmbeddedRelay:
                             await ws.send_json({"type": "send_ack", "to": resolved, "delivered": bool(result)})
 
                     elif msg_type == "presence" and username:
-                        await ws.send_json({"type": "presence", "online": list(self.users.keys())})
+                        online_with_status = {u: self.users[u].status for u in self.users}
+                        await ws.send_json({
+                            "type": "presence",
+                            "online": list(self.users.keys()),
+                            "statuses": online_with_status
+                        })
+
+                    elif msg_type == "status_change" and username:
+                        new_status = data.get("status", "online")
+                        if new_status in ("online", "busy", "away", "focusing"):
+                            self.users[username].status = new_status
+                            await self.broadcast_presence(username, new_status)
+                            await ws.send_json({"type": "status_ok", "status": new_status})
 
                     elif msg_type == "ping":
                         await ws.send_json({"type": "pong"})
@@ -429,7 +450,7 @@ class MessageRow(QFrame):
 class SignalBridge(QObject):
     message_received = pyqtSignal(str, str, str, bool, str, bool)
     status_changed = pyqtSignal(str)
-    presence_changed = pyqtSignal(list)
+    presence_changed = pyqtSignal(list, dict)  # online list, statuses dict
 
 
 class MessageWindow(QMainWindow):
@@ -444,6 +465,8 @@ class MessageWindow(QMainWindow):
         self.relay_client_ws = None
         self.relay_connected = False
         self.current_view = "mine"  # Track current view: "mine" or "todos"
+        self.my_status = "online"  # Current user's status
+        self.user_statuses = {}  # {username: status} for online users
         self.bridge = SignalBridge()
 
         self.bridge.message_received.connect(self.add_message)
@@ -608,7 +631,8 @@ class MessageWindow(QMainWindow):
         self.relay_label.setStyleSheet(f"color: {color}; font-size: 11px;")
         self.relay_label.setText(f"({status})")
 
-    def update_presence(self, online: list):
+    def update_presence(self, online: list, statuses: dict = None):
+        self.user_statuses = statuses or {}
         self.online_label.setText(f"{len(online)} online" if online else "")
 
     def _handle_command(self, cmd: str) -> bool:
@@ -650,6 +674,12 @@ class MessageWindow(QMainWindow):
             return True
         elif cmd_name == "/online":
             self._show_online()
+            return True
+        elif cmd_name == "/status":
+            if len(parts) >= 2:
+                self._set_status(parts[1])
+            else:
+                self._show_status()
             return True
         return False
 
@@ -742,6 +772,8 @@ class MessageWindow(QMainWindow):
             ("@claude task", "Send task to your Claude"),
             ("/mine", "Show unread messages"),
             ("/todos", "Show TODO messages"),
+            ("/online", "Show online users"),
+            ("/status [val]", "Show/set status (busy/away/focusing)"),
             ("/relay", "Show relay connection info"),
             ("/clear", "Clear display"),
         ]
@@ -752,15 +784,77 @@ class MessageWindow(QMainWindow):
         self.input_field.clear()
 
     def _show_online(self):
-        """Show online users."""
+        """Show online users with status icons."""
         self._add_text_to_stream("─── Online ───", "#c586c0", bold=True)
 
-        if self.relay_connected:
-            self._add_text_to_stream("  Connected to relay", "#4ec9b0")
+        if not self.relay_connected:
+            self._add_text_to_stream("  Not connected to relay", "#f48771")
+            self.input_field.clear()
+            return
+
+        status_icons = {
+            "online": "🟢",
+            "busy": "🔴",
+            "away": "🟡",
+            "focusing": "🟣"
+        }
+
+        if self.user_statuses:
+            for user, status in sorted(self.user_statuses.items()):
+                icon = status_icons.get(status, "⚪")
+                is_me = " (you)" if user == self.username else ""
+                self._add_text_to_stream(f"  {icon} @{user}{is_me} - {status}", "#4ec9b0")
         else:
-            self._add_text_to_stream("  Not connected", "#f48771")
+            self._add_text_to_stream("  No users online", "#666")
 
         self.input_field.clear()
+
+    def _show_status(self):
+        """Show current status options."""
+        self._add_text_to_stream("─── Status ───", "#c586c0", bold=True)
+
+        status_icons = {"online": "🟢", "busy": "🔴", "away": "🟡", "focusing": "🟣"}
+        icon = status_icons.get(self.my_status, "⚪")
+        self._add_text_to_stream(f"  Current: {icon} {self.my_status}", "#4ec9b0")
+        self._add_text_to_stream("", "#666")
+        self._add_text_to_stream("  Set with: /status <value>", "#666")
+        self._add_text_to_stream("  Values: online, busy, away, focusing", "#666")
+
+        self.input_field.clear()
+
+    def _set_status(self, new_status: str):
+        """Set user's presence status."""
+        new_status = new_status.lower().strip()
+        valid_statuses = ("online", "busy", "away", "focusing")
+
+        if new_status not in valid_statuses:
+            self._add_text_to_stream(f"  Invalid status: {new_status}", "#f48771")
+            self._add_text_to_stream(f"  Valid: {', '.join(valid_statuses)}", "#666")
+            self.input_field.clear()
+            return
+
+        self.my_status = new_status
+        status_icons = {"online": "🟢", "busy": "🔴", "away": "🟡", "focusing": "🟣"}
+        icon = status_icons.get(new_status, "⚪")
+
+        # Update local status dot color
+        dot_colors = {"online": "#4ec9b0", "busy": "#f48771", "away": "#dcdcaa", "focusing": "#c586c0"}
+        self.status_dot.setStyleSheet(f"color: {dot_colors.get(new_status, '#4ec9b0')}; font-size: 13px;")
+
+        self._add_text_to_stream(f"  {icon} Status set to: {new_status}", "#4ec9b0")
+
+        # Send status change to relay
+        if self.relay_connected:
+            self._send_status_change(new_status)
+
+        self.input_field.clear()
+
+    def _send_status_change(self, new_status: str):
+        """Send status change to relay server."""
+        if hasattr(self, '_status_change_pending'):
+            self._status_change_pending = new_status
+        else:
+            self._status_change_pending = new_status
 
     def _show_relay_info(self):
         """Show current relay connection info."""
@@ -1082,10 +1176,12 @@ class MessageWindow(QMainWindow):
         while True:
             try:
                 async with websockets.connect(url) as ws:
+                    self.relay_client_ws = ws
                     await ws.send(json.dumps({
                         "type": "auth",
                         "secret": secret,
                         "username": self.username,
+                        "status": self.my_status,
                         "claude_whitelist": get_claude_whitelist()
                     }))
 
@@ -1094,9 +1190,20 @@ class MessageWindow(QMainWindow):
                         self.relay_connected = True
                         mode = "● hosting" if self.host_relay else "● relay"
                         self.bridge.status_changed.emit(mode)
-                        self.bridge.presence_changed.emit(resp.get("online", []))
+                        self.bridge.presence_changed.emit(
+                            resp.get("online", []),
+                            resp.get("statuses", {})
+                        )
 
                         async for message in ws:
+                            # Check for pending status change
+                            if hasattr(self, '_status_change_pending') and self._status_change_pending:
+                                await ws.send(json.dumps({
+                                    "type": "status_change",
+                                    "status": self._status_change_pending
+                                }))
+                                self._status_change_pending = None
+
                             data = json.loads(message)
                             if data.get("type") == "message":
                                 self.bridge.message_received.emit(
@@ -1106,13 +1213,19 @@ class MessageWindow(QMainWindow):
                                     True, "normal", True
                                 )
                             elif data.get("type") == "presence_change":
-                                self.bridge.presence_changed.emit(data.get("online", []))
+                                self.bridge.presence_changed.emit(
+                                    data.get("online", []),
+                                    data.get("statuses", {})
+                                )
+                            elif data.get("type") == "status_ok":
+                                pass  # Status change confirmed
                     else:
                         self.bridge.status_changed.emit("auth failed")
                         break
 
             except Exception as e:
                 self.relay_connected = False
+                self.relay_client_ws = None
                 self.bridge.status_changed.emit(f"reconnecting...")
                 await asyncio.sleep(5)
 
