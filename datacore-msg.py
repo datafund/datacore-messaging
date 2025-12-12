@@ -642,6 +642,9 @@ class MessageWindow(QMainWindow):
                     item.widget().deleteLater()
             self.input_field.clear()
             return True
+        elif cmd_name == "/relay":
+            self._show_relay_info()
+            return True
         elif cmd_name in ("/help", "/?"):
             self._show_help()
             return True
@@ -739,6 +742,7 @@ class MessageWindow(QMainWindow):
             ("@claude task", "Send task to your Claude"),
             ("/mine", "Show unread messages"),
             ("/todos", "Show TODO messages"),
+            ("/relay", "Show relay connection info"),
             ("/clear", "Clear display"),
         ]
 
@@ -755,6 +759,22 @@ class MessageWindow(QMainWindow):
             self._add_text_to_stream("  Connected to relay", "#4ec9b0")
         else:
             self._add_text_to_stream("  Not connected", "#f48771")
+
+        self.input_field.clear()
+
+    def _show_relay_info(self):
+        """Show current relay connection info."""
+        self._add_text_to_stream("─── Relay ───", "#c586c0", bold=True)
+
+        relay_url = get_relay_url()
+        mode = "hosting" if self.host_relay else "client"
+
+        if self.relay_connected:
+            self._add_text_to_stream(f"  Status: Connected ({mode})", "#4ec9b0")
+        else:
+            self._add_text_to_stream(f"  Status: Disconnected ({mode})", "#f48771")
+
+        self._add_text_to_stream(f"  URL: {relay_url}", "#d4d4d4")
 
         self.input_field.clear()
 

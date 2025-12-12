@@ -71,6 +71,7 @@ Type in the input field:
 | `/mine` | Show my unread messages |
 | `/todos` | Show my TODO messages |
 | `/online` | Show online users |
+| `/relay` | Show relay connection info |
 | `/clear` | Clear display |
 | `/help` | Show available commands |
 
