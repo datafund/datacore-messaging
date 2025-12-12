@@ -168,6 +168,12 @@ python3 hooks/send-reply.py --complete msg-20251212-143000-gregor gregor "Task c
 - Using `--complete` marks the original task as `TASK_STATUS: done`
 - Use `/tasks` in GUI to see task queue status
 
+**Rate Limiting:**
+- Claude processes one task at a time (FIFO queue)
+- High priority tasks jump the queue
+- If Claude is already working on a task, new tasks stay queued
+- Complete current task before next one is loaded
+
 The reply is:
 1. Saved to the recipient's inbox (`gregor.org`)
 2. Sent via relay for real-time delivery (if connected)

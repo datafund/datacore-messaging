@@ -696,6 +696,9 @@ class MessageWindow(QMainWindow):
         elif cmd_name == "/tasks":
             self._show_tasks()
             return True
+        elif cmd_name == "/queue":
+            self._show_tasks()  # Same as /tasks
+            return True
         return False
 
     def _on_status_change(self, msg_id: str, current_status: str):

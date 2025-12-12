@@ -167,6 +167,18 @@ def mark_messages_as_working(inbox_path, message_ids):
         inbox_path.write_text(content)
 
 
+def get_working_task_count(inbox_path):
+    """Count tasks currently being worked on."""
+    if not inbox_path or not inbox_path.exists():
+        return 0
+
+    try:
+        content = inbox_path.read_text()
+        return content.count(":TASK_STATUS: working")
+    except:
+        return 0
+
+
 def main():
     inbox = get_claude_inbox()
 
@@ -184,30 +196,49 @@ def main():
     if not messages:
         sys.exit(0)
 
-    # All unread messages are new (we mark them read after showing)
-    new_messages = messages
-
-    if not new_messages:
+    # Check if there's already a task being worked on
+    working_count = get_working_task_count(inbox)
+    if working_count > 0:
+        # Show queue status instead of loading more tasks
+        username = get_username()
+        print(f"\n⏳ @{username}-claude has {working_count} task(s) in progress.")
+        print(f"📋 {len(messages)} task(s) queued.")
+        print()
+        print("Complete current task(s) first using:")
+        print("  hooks/send-reply.py --complete <msg-id> <user> <message>")
+        print()
+        print("Or view queue with: /tasks in GUI")
         sys.exit(0)
 
-    # Output new messages to inject into context
-    username = get_username()
-    print(f"\n📬 New messages for @{username}-claude:\n")
+    # Sort by priority (high first)
+    messages.sort(key=lambda m: (0 if m["priority"] == "high" else 1, m["id"]))
 
-    for msg in new_messages:
-        priority_marker = " [!]" if msg["priority"] == "high" else ""
-        print(f"From @{msg['from']} ({msg['time']}){priority_marker}:")
-        print(f"  {msg['text']}")
-        print(f"  [msg-id: {msg['id']}]")
+    # Only process one task at a time
+    task = messages[0]
+    remaining = len(messages) - 1
+
+    # Output the task to inject into context
+    username = get_username()
+    print(f"\n📬 Task for @{username}-claude:\n")
+
+    priority_marker = " [!]" if task["priority"] == "high" else ""
+    print(f"From @{task['from']} ({task['time']}){priority_marker}:")
+    print(f"  {task['text']}")
+    print(f"  [msg-id: {task['id']}]")
+    print()
+
+    if remaining > 0:
+        print(f"📋 {remaining} more task(s) queued.")
         print()
 
     print("---")
     print("To reply: use hooks/send-reply.py <user> <message>")
-    print("To mark done: use hooks/send-reply.py --complete <msg-id> <user> <message>")
-    print("Tasks are now marked as 'working'.")
+    print(f"To complete: use hooks/send-reply.py --complete {task['id']} {task['from']} <message>")
+    print()
+    print("Task is now marked as 'working'.")
 
-    # Mark messages as working in the org file
-    mark_messages_as_working(inbox, [m["id"] for m in new_messages])
+    # Mark only this one task as working
+    mark_messages_as_working(inbox, [task["id"]])
 
     sys.exit(0)
 
