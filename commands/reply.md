@@ -32,8 +32,8 @@ Reply to a message, creating a threaded conversation.
    - Set `TO` to original sender
    - Set `FROM` to current user
 
-4. **Append to original sender's inbox**
-   - File: `[space]/org/inboxes/{original_sender}.org`
+4. **Append to messaging inbox**
+   - File: `[space]/org/messaging/inbox.org`
 
 5. **Mark original as replied**
    - Add `:replied:` tag to original message heading
@@ -42,7 +42,7 @@ Reply to a message, creating a threaded conversation.
    ```
    ✓ Reply sent to @gregor
      Thread: msg-20251211-143000-gregor
-     File: 1-datafund/org/inboxes/gregor.org
+     File: 1-datafund/org/messaging/inbox.org
 
    Run ./sync push to deliver.
    ```

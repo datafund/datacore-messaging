@@ -14,6 +14,18 @@ dependencies:
 
 # What this module provides (spec-compliant format)
 provides:
+  # Hooks are fully implemented and active
+  hooks:
+    - today         # Unread message count in /today briefing
+    - task_check    # Agent task check on prompt submit
+    - send_reply    # Reply helper for Claude
+    - mark_message  # Mark messages read/archived
+    - task_queue    # Approve/reject/cancel queued tasks
+
+# Phase 2 — CLI commands and agents are spec-only documents;
+# executable implementation is planned for Phase 2.
+# See commands/*.md and agents/*.md for specifications.
+planned:
   commands:
     - msg
     - my-messages

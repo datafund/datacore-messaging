@@ -30,13 +30,13 @@ Send a message to all users in a space.
    - Otherwise prompt
 
 3. **Get all users in space**
-   - Read `[space]/org/inboxes/USERS.yaml`
+   - Read `[space]/contacts.yaml`
    - Exclude sender
    - Exclude `--exclude` list
-   - Exclude AI users (type: ai)
+   - Exclude AI users (trust_tier: ai)
 
 4. **Send to each user**
-   - Append message to each user's inbox
+   - Append message to `[space]/org/messaging/inbox.org`
    - Use special `:broadcast:` tag
 
 5. **Confirm**

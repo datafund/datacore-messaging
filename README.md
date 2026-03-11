@@ -86,7 +86,8 @@ actors:
     added: 2026-03-11
 ```
 
-Add actors via `/msg-trust` or edit the file directly.
+Add actors by editing `{space}/contacts.yaml` directly, or set per-actor trust
+overrides in `settings.local.yaml` under `messaging.trust_overrides`.
 
 ## Usage
 
@@ -206,12 +207,20 @@ python3 hooks/task-queue.py cancel msg-20251212-143000-gregor
 The relay provides real-time delivery between team members. It is optional —
 the module works offline using the org-workspace store alone.
 
-**Deploy your own** (see `relay/README.md`):
+The relay server is implemented in `lib/relay.py`. TLS termination should be
+handled by a reverse proxy (nginx, Caddy) in front of the relay process.
+
+**Run the relay:**
 
 ```bash
-cd relay/
+RELAY_SECRET=your-secret python3 -m lib.relay --port 8080
+```
+
+**Or deploy with Docker** (see `fly.toml` for Fly.io example):
+
+```bash
 echo "RELAY_SECRET=your-secret" > .env
-docker-compose up -d --build
+docker build -t datacore-relay . && docker run -p 8080:8080 --env-file .env datacore-relay
 ```
 
 Configure the URL in `settings.local.yaml` under `messaging.relay.url`.
@@ -222,13 +231,14 @@ Configure the URL in `settings.local.yaml` under `messaging.relay.url`.
 datacore-msg.py           # Unified CLI/GUI entry point
 install.sh                # Interactive installer
 settings.local.yaml       # Your settings (gitignored)
+UPGRADING.md              # Migration guide (v0.1.0 → v0.2.0+)
 
 lib/
 ├── config.py             # Settings, trust tiers, paths
 ├── message_store.py      # org-workspace message CRUD
 ├── agent_inbox.py        # Agent task state machine
 ├── governor.py           # Task acceptance policy
-└── relay.py              # WebSocket relay client
+└── relay.py              # WebSocket relay server (consolidated)
 
 hooks/
 ├── inbox-watcher.py      # Claude Code hook (prompt check)
@@ -238,12 +248,6 @@ hooks/
 
 templates/
 └── contacts.yaml         # Known actors template
-
-relay/
-├── Dockerfile
-├── docker-compose.yml
-├── datacore-msg-relay.py
-└── README.md
 ```
 
 ## License

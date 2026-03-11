@@ -25,10 +25,9 @@ class User:
 
 
 class RelayServer:
-    def __init__(self, secret: str, claude_whitelist: dict | None = None):
+    def __init__(self, secret: str):
         self.secret = secret
         self.users: dict[str, User] = {}
-        self.claude_whitelist = claude_whitelist or {}
 
     def add_user(self, username: str, ws: web.WebSocketResponse) -> None:
         self.users[username] = User(username=username, ws=ws)
@@ -64,7 +63,12 @@ class RelayServer:
 
 
 def create_relay_app(relay_secret: str) -> web.Application:
-    """Create the aiohttp relay application. Raises ValueError if relay_secret is empty."""
+    """Create the aiohttp relay application. Raises ValueError if relay_secret is empty.
+
+    TLS note: this server speaks plain HTTP/WS. TLS termination must be handled
+    by a reverse proxy (nginx, Caddy, etc.) in front of this process. Clients
+    should connect via wss:// through the proxy, never directly to this port.
+    """
     if not relay_secret:
         raise ValueError(
             "RELAY_SECRET must be set. "
@@ -150,6 +154,12 @@ def run_relay() -> None:
     args = parse_relay_args()
     secret = os.environ.get("RELAY_SECRET", "")
     app = create_relay_app(relay_secret=secret)
+    logger.info(
+        "Relay listening on %s:%s — TLS must be terminated by a reverse proxy "
+        "(nginx, Caddy). Clients must connect via wss://, not ws://.",
+        args.bind,
+        args.port,
+    )
     web.run_app(app, host=args.bind, port=args.port)
 
 
