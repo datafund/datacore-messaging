@@ -1,6 +1,4 @@
-# Relay server dependencies
+org-workspace>=0.3.0
 aiohttp>=3.9.0
 websockets>=12.0
-
-# Optional: for local development
 pyyaml>=6.0
