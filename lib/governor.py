@@ -5,6 +5,8 @@ Per DIP-0023 Section 7.
 """
 
 import json
+import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -48,8 +50,9 @@ class TaskGovernor:
         self._state: dict[str, _SenderState] = {}
         self._load_state()
 
-    def _load_state(self) -> None:
-        """Load persisted state from file. Does not use FileLock."""
+    def _load_state_unlocked(self) -> None:
+        """Read state from disk. Must be called from within a FileLock context."""
+        self._state = {}
         if self._budget_file.exists():
             try:
                 data = json.loads(self._budget_file.read_text())
@@ -63,8 +66,16 @@ class TaskGovernor:
             except (json.JSONDecodeError, KeyError):
                 pass
 
-    def _save_state(self) -> None:
-        """Persist state to file with FileLock for concurrent safety."""
+    def _load_state(self) -> None:
+        """Load state from disk, acquiring FileLock for a safe read."""
+        with FileLock(self._budget_file):
+            self._load_state_unlocked()
+
+    def _write_state_unlocked(self) -> None:
+        """Atomically write current in-memory state to disk (temp+rename).
+
+        Must be called from within a FileLock context.
+        """
         now = time.time()
         hour_ago = now - 3600
         data = {"date": self._today, "senders": {}}
@@ -76,8 +87,20 @@ class TaskGovernor:
                 "tasks_today": state.tasks_today,
                 "active_tasks": state.active_tasks,
             }
-        with FileLock(self._budget_file):
-            self._budget_file.write_text(json.dumps(data, indent=2))
+        # Write to a temp file in the same directory, then atomically rename.
+        fd, tmp_path = tempfile.mkstemp(
+            dir=self._budget_file.parent, suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(json.dumps(data, indent=2))
+            os.replace(tmp_path, self._budget_file)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def _check_date_rollover(self) -> None:
         """Reset state if day has changed."""
@@ -85,7 +108,6 @@ class TaskGovernor:
         if today != self._today:
             self._today = today
             self._budget_file = self._state_dir / f"budget-{today}.json"
-            self._state = {}
             self._load_state()
 
     def _get_sender(self, actor_id: str) -> _SenderState:
@@ -99,7 +121,11 @@ class TaskGovernor:
         estimated_tokens: int = 0,
         effort: int = 0,
     ) -> TaskCheckResult:
-        """Check whether a task from actor_id is allowed under current governance rules."""
+        """Check whether a task from actor_id is allowed under current governance rules.
+
+        This is a read-only check against the current in-memory state. For an
+        atomic check-and-record use check_and_record() or submit_task().
+        """
         self._check_date_rollover()
         tier_name = get_trust_tier(actor_id)
         tier_config = get_trust_tier_config(tier_name)
@@ -186,47 +212,66 @@ class TaskGovernor:
     ) -> TaskCheckResult:
         """Check and atomically record a task submission if allowed."""
         with FileLock(self._budget_file):
-            self._load_state()
+            self._load_state_unlocked()
             result = self.check_task(actor_id, estimated_tokens=estimated_tokens, effort=effort)
             if result.allowed:
                 sender = self._get_sender(actor_id)
                 sender.tasks_this_hour.append(time.time())
                 sender.tasks_today += 1
                 sender.active_tasks += 1
-                now = time.time()
-                hour_ago = now - 3600
-                data = {"date": self._today, "senders": {}}
-                for s_id, state in self._state.items():
-                    state.tasks_this_hour = [t for t in state.tasks_this_hour if t > hour_ago]
-                    data["senders"][s_id] = {
-                        "tokens_today": state.tokens_today,
-                        "tasks_this_hour": state.tasks_this_hour,
-                        "tasks_today": state.tasks_today,
-                        "active_tasks": state.active_tasks,
-                    }
-                self._budget_file.write_text(json.dumps(data, indent=2))
+                self._write_state_unlocked()
         return result
+
+    def submit_task(
+        self,
+        actor_id: str,
+        estimated_tokens: int = 0,
+        effort: int = 0,
+    ) -> TaskCheckResult:
+        """Check governance rules and record a task submission if allowed.
+
+        Preferred public API over check_and_record (same semantics, clearer name).
+        """
+        return self.check_and_record(actor_id, estimated_tokens=estimated_tokens, effort=effort)
+
+    def _record_task_submission(self, actor_id: str) -> None:
+        """Unconditionally record a task submission (internal use only).
+
+        Callers outside this class should use submit_task() which also
+        enforces governance rules.
+        """
+        with FileLock(self._budget_file):
+            self._load_state_unlocked()
+            sender = self._get_sender(actor_id)
+            sender.tasks_this_hour.append(time.time())
+            sender.tasks_today += 1
+            sender.active_tasks += 1
+            self._write_state_unlocked()
+
+    def record_task_submission(self, actor_id: str) -> None:
+        """Record a task submission unconditionally.
+
+        Deprecated: prefer submit_task() which enforces governance rules.
+        Kept for backward compatibility.
+        """
+        self._record_task_submission(actor_id)
 
     def record_usage(self, actor_id: str, tokens: int) -> None:
         """Record token usage for an actor."""
-        self._check_date_rollover()
-        sender = self._get_sender(actor_id)
-        sender.tokens_today += tokens
-        self._save_state()
-
-    def record_task_submission(self, actor_id: str) -> None:
-        """Record that a task was submitted by actor_id."""
-        sender = self._get_sender(actor_id)
-        sender.tasks_this_hour.append(time.time())
-        sender.tasks_today += 1
-        sender.active_tasks += 1
-        self._save_state()
+        with FileLock(self._budget_file):
+            self._check_date_rollover()
+            self._load_state_unlocked()
+            sender = self._get_sender(actor_id)
+            sender.tokens_today += tokens
+            self._write_state_unlocked()
 
     def record_task_completion(self, actor_id: str) -> None:
         """Record that a task was completed by actor_id."""
-        sender = self._get_sender(actor_id)
-        sender.active_tasks = max(0, sender.active_tasks - 1)
-        self._save_state()
+        with FileLock(self._budget_file):
+            self._load_state_unlocked()
+            sender = self._get_sender(actor_id)
+            sender.active_tasks = max(0, sender.active_tasks - 1)
+            self._write_state_unlocked()
 
     def get_usage(self, actor_id: str) -> dict:
         """Get usage stats for an actor."""
