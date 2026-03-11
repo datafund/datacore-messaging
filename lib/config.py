@@ -137,6 +137,9 @@ def get_compute_config() -> dict[str, Any]:
         "per_task_timeout_minutes": 30,
         "cooldown_between_tasks": 60,
         "max_queue_depth": 20,
+        "rate_limits": {
+            "tasks_per_hour": 5,
+        },
     }
     custom = settings.get("messaging", {}).get("compute", {})
     defaults.update(custom)

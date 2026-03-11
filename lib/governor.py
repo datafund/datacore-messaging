@@ -159,6 +159,18 @@ class TaskGovernor:
                 priority_boost=boost,
             )
 
+        # Check global queue depth
+        max_queue = compute.get("max_queue_depth", 20)
+        active_tasks = sum(s.active_tasks for s in self._state.values())
+        if active_tasks >= max_queue:
+            return TaskCheckResult(
+                allowed=False,
+                trust_tier=tier_name,
+                auto_accept=auto_accept,
+                reason=f"Queue full: {active_tasks}/{max_queue}",
+                priority_boost=boost,
+            )
+
         return TaskCheckResult(
             allowed=True,
             trust_tier=tier_name,
@@ -173,9 +185,26 @@ class TaskGovernor:
         effort: int = 0,
     ) -> TaskCheckResult:
         """Check and atomically record a task submission if allowed."""
-        result = self.check_task(actor_id, estimated_tokens=estimated_tokens, effort=effort)
-        if result.allowed:
-            self.record_task_submission(actor_id)
+        with FileLock(self._budget_file):
+            self._load_state()
+            result = self.check_task(actor_id, estimated_tokens=estimated_tokens, effort=effort)
+            if result.allowed:
+                sender = self._get_sender(actor_id)
+                sender.tasks_this_hour.append(time.time())
+                sender.tasks_today += 1
+                sender.active_tasks += 1
+                now = time.time()
+                hour_ago = now - 3600
+                data = {"date": self._today, "senders": {}}
+                for s_id, state in self._state.items():
+                    state.tasks_this_hour = [t for t in state.tasks_this_hour if t > hour_ago]
+                    data["senders"][s_id] = {
+                        "tokens_today": state.tokens_today,
+                        "tasks_this_hour": state.tasks_this_hour,
+                        "tasks_today": state.tasks_today,
+                        "active_tasks": state.active_tasks,
+                    }
+                self._budget_file.write_text(json.dumps(data, indent=2))
         return result
 
     def record_usage(self, actor_id: str, tokens: int) -> None:
@@ -201,6 +230,7 @@ class TaskGovernor:
 
     def get_usage(self, actor_id: str) -> dict:
         """Get usage stats for an actor."""
+        self._check_date_rollover()
         sender = self._get_sender(actor_id)
         return {"tokens_today": sender.tokens_today, "tasks_today": sender.tasks_today}
 
