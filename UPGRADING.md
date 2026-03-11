@@ -91,3 +91,15 @@ ls 1-datafund/contacts.yaml
 - Agent task inboxes under `org/messaging/agents/{username}-claude.org`
 - WebSocket relay for real-time delivery (optional)
 - Task governance: trust tiers, token budgets, rate limiting
+
+### GUI app (`datacore-msg.py`) status
+
+`datacore-msg.py` is **not compatible with v0.2.0**. It still references
+the old `org/inboxes/` storage layout and `claude_whitelist` settings.
+
+A rewritten GUI is planned for Phase 2. Until then:
+
+- Use `hooks/` scripts for message delivery
+- Use `lib/` API directly for programmatic access
+- Running `datacore-msg.py` will print a warning to stderr and continue
+  in degraded mode (display only — writes may fail silently)

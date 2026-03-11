@@ -1,5 +1,5 @@
 # Known ActivityPub actors for this space
-# Add actors via /msg-trust or manually edit this file
+# Add actors via trust_overrides in settings.local.yaml or manually edit this file
 actors: []
 # Example:
 #   - id: "tex@team.example.com"

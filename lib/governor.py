@@ -275,12 +275,15 @@ class TaskGovernor:
 
     def get_usage(self, actor_id: str) -> dict:
         """Get usage stats for an actor."""
+        self._load_state()
         self._check_date_rollover()
         sender = self._get_sender(actor_id)
         return {"tokens_today": sender.tokens_today, "tasks_today": sender.tasks_today}
 
     def daily_summary(self) -> dict:
         """Get a summary of today's usage across all senders."""
+        self._load_state()
+        self._check_date_rollover()
         total_tokens = sum(s.tokens_today for s in self._state.values())
         by_sender = {
             actor: {"tokens": s.tokens_today, "tasks": s.tasks_today}

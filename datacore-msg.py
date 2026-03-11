@@ -2,6 +2,15 @@
 """
 datacore-msg - Unified messaging app for Datacore
 
+DEPRECATED / NOT YET COMPATIBLE WITH v0.2.0
+--------------------------------------------
+This GUI application was written for v0.1.0 storage layout
+(org/inboxes/ paths) and has NOT been updated for v0.2.0
+(org/messaging/ layout, contacts.yaml, trust tiers).
+
+It will be rewritten in Phase 2. Until then, use the hooks/
+and lib/ API directly. See UPGRADING.md for details.
+
 Single process that runs:
 - GUI window for sending/receiving messages
 - Relay server (if hosting) for real-time delivery
@@ -1446,6 +1455,12 @@ class MessageWindow(QMainWindow):
 
 
 def main():
+    print(
+        "WARNING: datacore-msg.py is not yet compatible with v0.2.0 storage layout. "
+        "Use hooks/ or lib/ API directly. See UPGRADING.md for details.",
+        file=sys.stderr,
+    )
+
     host_relay = "--host" in sys.argv or "-h" in sys.argv
 
     if not DATACORE_ROOT.exists():

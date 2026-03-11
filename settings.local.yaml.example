@@ -8,13 +8,6 @@ identity:
 messaging:
   default_space: 1-team            # Space for message inboxes (e.g., 1-datafund)
 
-  # Users allowed to message YOUR Claude agent (@yourname-claude)
-  # Others get auto-reply without involving the LLM
-  claude_whitelist:
-    - gregor                       # @gregor can message @yourname-claude
-    - crt                          # @crt can message @yourname-claude
-    # Leave empty [] to allow everyone, or omit to disable whitelist
-
   relay:
     secret: "your-team-shared-secret"    # Same secret for all team members
 
@@ -24,9 +17,33 @@ messaging:
     # url: "ws://relay.internal.company.com:8080/ws"          # Internal server (no SSL)
     url: "wss://datacore-messaging-relay.datafund.ai/ws"      # Public relay (with SSL)
 
+  # Trust overrides: assign specific actors to trust tiers
+  # trust_overrides:
+  #   gregor@team.example.com: team
+  #   crt@team.example.com: team
+  #   partner@external.com: trusted
+
+  # Optional: override trust tier defaults (see lib/config.py for full schema)
+  # trust_tiers:
+  #   team:
+  #     daily_token_limit: 200000
+  #   trusted:
+  #     auto_accept: true
+
+  # Optional: override compute budget defaults
+  # compute:
+  #   daily_budget_tokens: 500000
+  #   per_sender_daily_max: 100000
+  #   per_task_max_tokens: 50000
+  #   per_task_timeout_minutes: 30
+  #   cooldown_between_tasks: 60
+  #   max_queue_depth: 20
+  #   rate_limits:
+  #     tasks_per_hour: 5
+
 # Routing:
 #   @claude        → automatically routes to @<sender>-claude (your own Claude)
-#   @gregor-claude → goes to Gregor's Claude (if you're whitelisted)
+#   @gregor-claude → goes to Gregor's Claude (if you're in their trust_overrides)
 #
 # User naming convention:
 #   @yourname       - Your human identity (GUI window)
