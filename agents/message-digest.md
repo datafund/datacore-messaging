@@ -13,14 +13,14 @@ Called by `/today` command when `messaging.show_in_today: true` (default).
 ## Behavior
 
 1. **Get current user identity**
-   - Read `identity.name` from settings
+   - Read `identity.name` from settings via `lib/config.get_username()`
 
-2. **Scan all inboxes**
-   - Find `*/org/inboxes/{identity.name}.org` in all spaces
+2. **Scan Universal Inbox**
+   - Open `[space]/org/messaging/inbox.org` for each configured space
+   - Use org-workspace query API: `MessageStore.find_unread()` returns nodes in TODO state with `:unread:` tag
 
 3. **Count unread messages**
-   - Parse org entries with `:unread:` tag
-   - Group by sender
+   - Group nodes by `:FROM:` property
    - Sort by count (descending)
 
 4. **Generate summary**
@@ -70,9 +70,11 @@ The `/today` command should:
 
 1. Check if messaging module is installed
 2. If `messaging.show_in_today: true`:
-   - Call this agent
+   - Call this agent (via `hooks/inbox-watcher.py`)
    - Include output in briefing after "Calendar" section
 3. If no messages, can optionally omit section entirely
+
+The agent reads from `org/messaging/inbox.org` using `MessageStore.find_unread()`. No direct file parsing — all access goes through `lib/message_store.py`.
 
 ## Example Integration in /today
 

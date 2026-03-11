@@ -2,14 +2,15 @@
 # https://github.com/datafund/datacore-messaging
 
 name: messaging
-version: 0.1.0
-description: Inter-user messaging via shared space inboxes
+version: 0.2.0
+description: Inter-user and human-to-agent messaging via org-workspace state machine
 author: datafund
 repository: https://github.com/datafund/datacore-messaging
 
 # Dependencies (spec-compliant format)
 dependencies:
   - core@>=0.1.0
+  - org-workspace>=0.3.0
 
 # What this module provides (spec-compliant format)
 provides:
@@ -21,7 +22,7 @@ provides:
     - broadcast
   agents:
     - message-digest
-    - claude-inbox
+    - message-task-intake
 
 # Settings schema (extension - not in spec but useful)
 settings:
@@ -50,20 +51,93 @@ settings:
       default: false
       description: Automatically mark messages as read after viewing
 
+    relay:
+      url:
+        type: string
+        required: false
+        description: WebSocket URL for the relay server
+      secret:
+        type: string
+        required: false
+        description: Authentication secret for relay connection
+
+    trust_tiers:
+      type: object
+      required: false
+      description: Per-tier overrides for priority_boost, daily_token_limit, max_task_effort, auto_accept
+    trust_overrides:
+      type: object
+      required: false
+      description: Per-actor trust tier assignments (actor_id -> tier name)
+
+    compute:
+      daily_budget_tokens:
+        type: integer
+        default: 500000
+        description: Global daily token budget across all senders
+      per_sender_daily_max:
+        type: integer
+        default: 100000
+        description: Per-sender daily token limit (override via trust_tiers)
+      per_task_max_tokens:
+        type: integer
+        default: 50000
+        description: Hard cap on tokens per task
+      per_task_timeout_minutes:
+        type: integer
+        default: 30
+        description: Task execution timeout in minutes
+      max_queue_depth:
+        type: integer
+        default: 20
+        description: Maximum number of concurrent active tasks
+      rate_limits:
+        tasks_per_hour:
+          type: integer
+          default: 5
+          description: Maximum tasks accepted per actor per hour
+
+    inbox_feeds:
+      type: array
+      items: string
+      default: []
+      description: External feed URLs to poll for incoming messages (relay WebSocket endpoints)
+
 # Files created by this module (extension)
 creates:
-  - path: "{space}/org/inboxes/"
+  - path: "{space}/org/messaging/"
     type: directory
-    description: Inbox directory for each space
-  - path: "{space}/org/inboxes/USERS.yaml"
+    description: Messaging directory for each space
+  - path: "{space}/org/messaging/inbox.org"
     type: file
-    description: User registry for the space
-  - path: "{space}/org/inboxes/{username}.org"
+    description: Universal inbox (all incoming messages and file deliveries)
+  - path: "{space}/org/messaging/outbox.org"
     type: file
-    description: Individual user inbox
+    description: Sent message log
+  - path: "{space}/org/messaging/agents/"
+    type: directory
+    description: Per-agent task inboxes
+  - path: "{space}/org/messaging/agents/{username}-claude.org"
+    type: file
+    description: Agent task inbox for the local Claude instance
+  - path: "{space}/contacts.yaml"
+    type: file
+    description: Contact registry mapping handles to usernames and relay endpoints
 
 # Integration hooks (extension)
 hooks:
   today:
     description: Add unread message count to daily briefing
-    handler: agents/message-digest.md
+    handler: hooks/inbox-watcher.py
+  task_check:
+    description: Check for queued agent tasks on prompt submit
+    handler: hooks/inbox-watcher.py
+  send_reply:
+    description: Send reply message to a thread
+    handler: hooks/send-reply.py
+  mark_message:
+    description: Mark a message read/archived
+    handler: hooks/mark-message.py
+  task_queue:
+    description: Approve, reject, or cancel queued tasks
+    handler: hooks/task-queue.py

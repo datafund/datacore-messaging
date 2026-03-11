@@ -1,173 +1,160 @@
-# Claude Inbox Agent
+# Message Task Intake Agent
 
-Processes messages sent to `@claude` and routes them as AI tasks.
+Receives messages addressed to Claude, validates them through TaskGovernor, and routes them as agent tasks via the org-workspace state machine.
 
 ## Purpose
 
-When users send messages to `@claude`, this agent:
-1. Parses the message as an AI task
-2. Routes to appropriate specialized agent
-3. Sends results back to the sender's inbox
+When users send messages to `@claude` (or the local Claude instance), this agent:
+1. Validates the sender against trust tiers via TaskGovernor
+2. Creates a task entry in the agent inbox with the appropriate initial state
+3. Routes to the correct specialized agent based on message content and tags
+4. Sends results back to the sender's inbox when the task completes
 
 ## Trigger
 
-- Called by `ai-task-executor` when processing `claude.org` inbox
-- Messages have `:AI:` tag in addition to `:unread:`
+- Called by `ai-task-executor` when processing `org/messaging/agents/{username}-claude.org`
+- Tasks in QUEUED state are claimed on the next prompt submit (via `hooks/inbox-watcher.py`)
+- Tasks in WAITING state require owner approval before execution
 
 ## Inbox Location
 
 ```
-[space]/org/inboxes/claude.org
+[space]/org/messaging/agents/{username}-claude.org
 ```
 
-## Message Format (Input)
+The filename is `{username}-claude.org` where `username` is `identity.name` from settings. There is no generic `claude.org` — each user's local Claude instance has its own per-user file.
 
-```org
-* MESSAGE [2025-12-11 Thu 14:30] :unread:AI:
-:PROPERTIES:
-:ID: msg-20251211-143000-gregor
-:FROM: gregor
-:TO: claude
-:PRIORITY: normal
-:END:
-Research competitor pricing for Verity and add findings to research/
+## Task State Machine
+
+States follow DIP-0023 Section 5.2, managed by `lib/agent_inbox.py` via org-workspace:
+
+```
+WAITING  -> QUEUED     (owner approves via task-queue.py approve)
+WAITING  -> CANCELLED  (owner rejects via task-queue.py reject)
+QUEUED   -> WORKING    (agent claims via inbox-watcher.py on prompt submit)
+QUEUED   -> CANCELLED  (owner cancels via task-queue.py cancel)
+WORKING  -> DONE       (execution completes)
+WORKING  -> QUEUED     (retry on failure)
+DONE     -> ARCHIVED   (owner approves result)
+DONE     -> QUEUED     (owner requests revision)
 ```
 
-## Behavior
+DONE is **not** terminal — it is an active review state. Only CANCELLED and ARCHIVED are terminal.
 
-1. **Parse message**
-   - Extract sender from `:FROM:`
-   - Extract task description from body
-   - Determine task type from content
+### Auto-accept by trust tier
 
-2. **Route to specialized agent**
+Trust tiers configured in `messaging.trust_tiers` (and default overrides in `lib/config.py`):
 
-   | Content Pattern | Agent | Tag |
-   |-----------------|-------|-----|
-   | "research", URL | gtd-research-processor | :AI:research: |
-   | "write", "draft", "create content" | gtd-content-writer | :AI:content: |
-   | "analyze", "report", "metrics" | gtd-data-analyzer | :AI:data: |
-   | "track", "status", "blockers" | gtd-project-manager | :AI:pm: |
-   | Default | general processing | :AI: |
+| Tier | auto_accept | Initial state |
+|------|-------------|---------------|
+| owner | true | QUEUED |
+| team | true | QUEUED |
+| trusted | false | WAITING |
+| unknown | false | WAITING |
 
-3. **Execute task**
-   - Pass message content to specialized agent
-   - Capture output/results
-
-4. **Send reply to sender**
-   - Create message in sender's inbox
-   - Include task results or summary
-   - Tag with `:from-ai:`
-   - Reference original message in `:THREAD:`
-
-5. **Mark original as processed**
-   - Change `:unread:` to `:processed:`
-   - Add `:done:` tag
-
-## Reply Format (Output)
+## Task Format (org-workspace entry)
 
 ```org
-* MESSAGE [2025-12-11 Thu 15:00] :unread:from-ai:
+* QUEUED Research competitor pricing for Verity :AI:research:
 :PROPERTIES:
-:ID: msg-20251211-150000-claude
-:FROM: claude
-:TO: gregor
-:THREAD: msg-20251211-143000-gregor
-:TASK_STATUS: completed
+:ID:         msg-20251211-143000-a1b2c3d4
+:FROM:       gregor
+:TRUST_TIER: owner
+:SUBMITTED:  [2025-12-11 Thu 14:30]
+:APPROVAL:   auto_accepted
+:EFFORT:     3
 :END:
-✓ Research completed
+```
 
-Added 3 competitor analyses:
+For tasks requiring approval (trust tier without auto_accept):
+
+```org
+* WAITING Draft blog post about data tokenization :AI:content:
+:PROPERTIES:
+:ID:         msg-20251211-144500-e5f6a7b8
+:FROM:       external-user
+:TRUST_TIER: unknown
+:SUBMITTED:  [2025-12-11 Thu 14:45]
+:AWAITING:   owner-approval
+:ESTIMATED_TOKENS: 5000
+:ESTIMATED_COST:   $0.08
+:END:
+```
+
+## Agent Routing
+
+Routing is based on org-mode tags present in the message entry:
+
+| Tag | Agent | Description |
+|-----|-------|-------------|
+| `:AI:research:` | research-orchestrator | URL or topic research |
+| `:AI:content:` | gtd-content-writer | Blog posts, emails, social copy |
+| `:AI:data:` | gtd-data-analyzer | Analysis, metrics, reports |
+| `:AI:pm:` | gtd-project-manager | Project status, blockers |
+| `:AI:` (no subtype) | general processing | Default task execution |
+
+Tag patterns are matched from the task entry's org tags. A task with `:AI:research:` will be routed to `research-orchestrator` regardless of message phrasing.
+
+## Governance (TaskGovernor)
+
+Before accepting a task, `lib/governor.py` checks:
+- **Effort limit**: task effort vs. tier's `max_task_effort`
+- **Per-sender token budget**: `sender.tokens_today` vs. tier's `daily_token_limit`
+- **Global daily budget**: total tokens across all senders vs. `compute.daily_budget_tokens`
+- **Rate limit**: tasks submitted in the last hour vs. `compute.rate_limits.tasks_per_hour`
+- **Queue depth**: active tasks vs. `compute.max_queue_depth`
+
+If governance check fails, the task is rejected and a reply is sent to the sender explaining the reason.
+
+## Reply Format
+
+When a task completes, a message is created in the sender's inbox via `MessageStore.create_message()`:
+
+```org
+* TODO [2025-12-11 Thu 15:00] :unread:message:
+:PROPERTIES:
+:ID:       msg-20251211-150000-c9d0e1f2
+:FROM:     claude
+:TO:       gregor
+:REPLY_TO: msg-20251211-143000-a1b2c3d4
+:THREAD:   msg-20251211-143000-a1b2c3d4
+:END:
+Research completed.
+
+Added 3 competitor analyses to research/:
 - research/competitor-chainlink.md
 - research/competitor-ocean.md
 - research/competitor-streamr.md
-
-**Summary:**
-Chainlink: Enterprise focus, $50K+ deals
-Ocean Protocol: Token-based access, DeFi integration
-Streamr: Real-time data streams, pub/sub model
-
-Verity differentiation: RWA tokenization + provenance verification
 ```
 
-## Error Handling
+## Approval Workflow
 
-If task fails:
+For WAITING tasks, the owner uses `hooks/task-queue.py`:
 
-```org
-* MESSAGE [2025-12-11 Thu 15:00] :unread:from-ai:
-:PROPERTIES:
-:ID: msg-20251211-150000-claude
-:FROM: claude
-:TO: gregor
-:THREAD: msg-20251211-143000-gregor
-:TASK_STATUS: failed
-:END:
-⚠️ Task could not be completed
+```bash
+# View pending approvals
+python hooks/task-queue.py status
 
-Error: Could not access URL https://example.com (403 Forbidden)
+# Approve a task
+python hooks/task-queue.py approve --task-id msg-20251211-144500-e5f6a7b8
 
-Original request: Research competitor pricing...
-
-Please verify the URL is accessible or provide alternative sources.
-```
-
-## Example Interactions
-
-### Research Request
-
-**User sends:**
-```
-/msg @claude "Research MCP protocol best practices and create summary in notes/"
-```
-
-**Claude replies:**
-```
-✓ Research completed
-
-Created: notes/mcp-protocol-best-practices.md
-
-Key findings:
-- Security: Use scoped permissions, validate all inputs
-- Performance: Batch requests, cache responses
-- UX: Provide clear error messages, progress indicators
-```
-
-### Content Request
-
-**User sends:**
-```
-/msg @claude "Draft a blog post about data tokenization benefits"
-```
-
-**Claude replies:**
-```
-✓ Draft created
-
-File: content/drafts/data-tokenization-benefits.md
-
-Outline:
-1. Introduction to data as an asset
-2. Traditional vs tokenized data ownership
-3. Benefits: liquidity, fractional ownership, provenance
-4. Use cases: healthcare, finance, research
-5. Getting started with Verity
-
-Ready for your review and edits.
+# Reject a task
+python hooks/task-queue.py reject --task-id msg-20251211-144500-e5f6a7b8 --reason "Not relevant"
 ```
 
 ## Integration with ai-task-executor
 
 The `ai-task-executor` should:
-
-1. Check `[space]/org/inboxes/claude.org` for `:unread:AI:` messages
-2. Process each message through this agent
-3. Ensure replies are sent back
-4. Log completion to journal
+1. Check `[space]/org/messaging/agents/{username}-claude.org` for QUEUED tasks
+2. Claim the first QUEUED task (transitions to WORKING via `AgentInbox.claim()`)
+3. Execute via the appropriate routed agent
+4. Call `AgentInbox.complete()` with token usage and result path
+5. Send reply to sender via `MessageStore.create_message()`
+6. Record token usage via `TaskGovernor.record_usage()`
 
 ## Notes
 
-- Messages to @claude are processed during AI task execution cycles
-- Not real-time - delivery depends on when ai-task-executor runs
-- Complex tasks may be broken into subtasks
-- Results always sent back to sender's inbox
+- Tasks are not real-time — execution depends on when ai-task-executor or inbox-watcher runs
+- Complex tasks may be broken into subtasks; each subtask creates its own entry
+- Token usage is tracked per-sender per-day for budget enforcement
+- The `{username}-claude.org` file is created automatically by `AgentInbox._ensure_file()`
