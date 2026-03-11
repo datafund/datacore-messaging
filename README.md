@@ -1,15 +1,21 @@
 # Datacore Module: Messaging
 
-Real-time team messaging with Claude Code integration.
+Inter-user and human-to-agent messaging via org-workspace state machine.
 
 ## Features
 
-- **GUI Window**: Floating always-on-top window for sending/receiving messages
-- **Claude Code integration**: Message `@claude` to delegate AI tasks to your personal Claude
-- **Namespaced agents**: `@tex-claude`, `@gregor-claude` - each user has their own Claude
-- **Whitelist control**: Choose who can message your Claude (others get auto-reply)
-- **WebSocket relay**: Real-time delivery via `datacore-messaging-relay.datafund.ai`
-- **Local storage**: Messages saved as org-mode entries for offline access
+- **Team messaging**: Send/receive messages between Datacore users
+- **Agent inbox**: `@yourname-claude` receives tasks with full lifecycle governance
+- **Task governance**: Trust tiers, per-sender budgets, rate limiting, queue depth control
+- **org-workspace backed**: All state in org-mode files under `org/messaging/`
+- **Relay transport**: Real-time delivery via configurable WebSocket relay
+- **Claude Code hook**: Agent tasks surface on next prompt; Claude replies inline
+
+## Requirements
+
+- Python 3.10+
+- [org-workspace](https://github.com/datafund/org-workspace) >= 0.3.0
+- websockets, pyyaml, aiohttp, filelock
 
 ## Installation
 
@@ -21,7 +27,7 @@ cd messaging
 ```
 
 The installer will:
-- Install Python dependencies (PyQt6, websockets, pyyaml, aiohttp)
+- Install Python dependencies (see `requirements.txt`)
 - Create `settings.local.yaml` from template
 - Add Claude Code hook to `~/.claude/settings.json`
 
@@ -31,40 +37,78 @@ Edit `settings.local.yaml`:
 
 ```yaml
 identity:
-  name: yourname                   # Your username (required)
+  name: yourname              # Your username (required)
 
 messaging:
-  default_space: 1-datafund        # Space for message inboxes
-
-  claude_whitelist:                # Who can message @yourname-claude
-    - gregor
-    - crt
+  default_space: 1-datafund   # Space where org/messaging/ lives
 
   relay:
-    secret: "your-team-secret"     # Same for all team members
-    url: "wss://datacore-messaging-relay.datafund.ai/ws"
+    url: "wss://your-relay-host/ws"   # Configurable relay endpoint
+    secret: "your-team-secret"        # Shared secret for relay auth
+
+  trust_tiers:                # Optional: override per-tier defaults
+    team:
+      daily_token_limit: 200000
+    unknown:
+      auto_accept: false
+
+  trust_overrides:            # Optional: per-actor tier assignment
+    "tex@team.example.com": team
+    "stranger@other.com": unknown
 ```
 
+See `settings.local.yaml.example` for all options.
+
+## Storage Layout
+
+All messaging state lives under the space's `org/messaging/` directory:
+
+```
+{space}/org/messaging/
+├── inbox.org                 # Universal inbox (all incoming messages)
+├── outbox.org                # Sent message log
+└── agents/
+    └── {username}-claude.org # Agent task inbox (task state machine)
+```
+
+Messages are org-mode headings with property drawers. The agent inbox uses
+org-workspace's state machine: `WAITING → QUEUED → WORKING → DONE → ARCHIVED`.
+
+## Contacts
+
+Known actors are stored in `templates/contacts.yaml` (copy to your space):
+
+```yaml
+actors:
+  - id: "tex@team.example.com"
+    name: "Tex"
+    trust_tier: team
+    added: 2026-03-11
+```
+
+Add actors via `/msg-trust` or edit the file directly.
+
 ## Usage
+
+### Send a Message
+
+```bash
+python3 datacore-msg.py send @gregor "Hey, can you review the PR?"
+python3 datacore-msg.py send @tex-claude "Research competitor pricing"
+```
+
+### Check Inbox
+
+```bash
+python3 datacore-msg.py inbox
+```
 
 ### Start the GUI
 
 ```bash
-./start.sh
-# Or directly:
-python3 datacore-msg.py
+python3 datacore-msg.py gui
+# Or: ./start.sh
 ```
-
-### Send Messages
-
-In the GUI input field:
-- `@gregor Hey, can you review the PR?` - Message a teammate
-- `@claude Research competitor pricing` - Message your Claude agent
-- `@gregor-claude Help with code review` - Message someone else's Claude (if whitelisted)
-- `@gregor >msg-id Follow-up here` - Reply to a message (creates thread)
-- `@claude [github:42] Fix this bug` - Route response to GitHub issue
-- `@claude [file:research/report.md] Analyze this` - Route to file
-- `@claude [@gregor] Help with code` - CC response to another user
 
 ### GUI Commands
 
@@ -74,176 +118,95 @@ Type in the input field:
 |---------|-------------|
 | `/mine` | Show my unread messages |
 | `/todos` | Show my TODO messages |
-| `/tasks` | Show Claude task queue (working/pending/done) |
-| `/context <id>` | Show thread context for a message |
-| `/online` | Show online users with status |
-| `/status` | Show your current status |
-| `/status <val>` | Set status: online, busy, away, focusing |
+| `/tasks` | Show Claude task queue |
+| `/context <id>` | Show thread context |
+| `/online` | Show online users |
+| `/status [val]` | Get/set status |
 | `/relay` | Show relay connection info |
 | `/clear` | Clear display |
 | `/help` | Show available commands |
 
-**Presence Status:**
-- 🟢 online - Available
-- 🔴 busy - Do not disturb
-- 🟡 away - Stepped away
-- 🟣 focusing - Deep work mode
+## Agent Inbox (Claude Code Integration)
 
-**Clickable messages:**
-- Click on a message to cycle: unread → todo → done → clear
-- Use the checkbox to mark as done
-- Messages show status: ● unread, ☐ todo, ✓ done
+Claude Code doesn't maintain a persistent relay connection. Instead, a hook
+checks the agent inbox each time you submit a prompt.
 
-### GUI Features
-
-- Always-on-top floating window
-- Dark theme
-- Real-time message updates
-- Online users count
-- System notifications (macOS)
-- `@claude` automatically routes to your personal `@yourname-claude`
+### Task Lifecycle
 
 ```
-┌─ Messages @tex ──────────── ● relay ─┐
-│                              2 online │
-│ ● @gregor 14:30                       │
-│   Need OAuth keys - see issue #25     │
-│                                       │
-│ ● @tex-claude 14:35                   │
-│   Research complete. See research/    │
-│                                       │
-│   @you→gregor 14:40                   │
-│   Keys are in the vault               │
-│                                       │
-├───────────────────────────────────────┤
-│ @gregor message here...               │
-├───────────────────────────────────────┤
-│ Space: 1-datafund                     │
-└───────────────────────────────────────┘
+WAITING   -> sender submits a task request
+QUEUED    -> owner approves (auto-accept for trusted tiers)
+WORKING   -> Claude claims and begins execution
+DONE      -> execution complete, result posted
+ARCHIVED  -> owner confirms result
+CANCELLED -> rejected or timed out at any stage
 ```
 
-## Claude Code Integration
+### How Claude Receives Tasks
 
-### How It Works
+1. Sender sends `@tex-claude do something` via GUI or CLI
+2. Message stored in `{space}/org/messaging/agents/tex-claude.org`
+3. Governor checks trust tier — auto-accepts or holds for approval
+4. On next Claude Code prompt, hook surfaces the queued task
+5. Claude executes and replies via `hooks/send-reply.py`
 
-**Important**: Claude Code doesn't have a persistent connection to the relay. Messages are checked via a hook that runs when you submit a prompt to Claude.
-
-Flow:
-1. Someone sends `@tex-claude do something` in GUI
-2. Message is stored in `tex-claude.org` with `:unread:` tag
-3. When you next interact with Claude Code, the hook checks the inbox
-4. Unread messages are shown to Claude and marked as read
-5. Claude can reply using `send-reply.py`
-
-### Receiving Messages
-
-The installer adds a hook that shows new messages when you interact with Claude:
+### Hook Output
 
 ```
-📬 New messages for @tex-claude:
+📬 New task for @tex-claude:
 
-From @gregor (14:30):
+From @gregor (14:30) [QUEUED]:
   Can you help debug the auth flow?
   [msg-id: msg-20251212-143000-gregor]
 
 ---
-To reply: use hooks/send-reply.py <user> <message>
-Messages above are now marked as read.
+To reply: hooks/send-reply.py <user> <message>
 ```
 
-After displaying, messages are marked as read (`:unread:` tag removed from org file).
+### Task Governance
+
+The governor enforces resource limits per sender before accepting tasks:
+
+- **Trust tiers**: `owner`, `team`, `trusted`, `unknown`
+- **Daily token budgets**: per-tier and global caps
+- **Rate limits**: tasks per hour per actor
+- **Queue depth**: max concurrent active tasks
+- **Auto-accept**: trusted tiers bypass approval queue
+
+Configure via `trust_tiers` and `trust_overrides` in settings.
 
 ### Sending Replies from Claude
 
 ```bash
-# Claude can reply via the send-reply script
+# Reply to a sender
 python3 hooks/send-reply.py gregor "Fixed! Check the PR."
 
 # Reply to a specific message (creates thread)
-python3 hooks/send-reply.py --reply-to msg-20251212-143000-gregor gregor "Here's the follow-up"
+python3 hooks/send-reply.py --reply-to msg-20251212-143000-gregor gregor "Follow-up"
 
-# Mark task as complete and reply (updates TASK_STATUS to done)
-python3 hooks/send-reply.py --complete msg-20251212-143000-gregor gregor "Task complete! See results."
+# Mark task complete and reply
+python3 hooks/send-reply.py --complete msg-20251212-143000-gregor gregor "Task done."
 ```
 
-**Task Status Tracking:**
-- When Claude reads a message, it's marked as `TASK_STATUS: working`
-- Using `--complete` marks the original task as `TASK_STATUS: done`
-- Use `/tasks` in GUI to see task queue status
-
-**Rate Limiting:**
-- Claude processes one task at a time (FIFO queue)
-- High priority tasks jump the queue
-- If Claude is already working on a task, new tasks stay queued
-- Complete current task before next one is loaded
-
-**Response Routing:**
-- `github:123` - Post to GitHub issue #123 (requires `gh` CLI)
-- `file:path/to.md` - Append to file (relative to space)
-- `@user` - CC to another user
-
-The reply is:
-1. Saved to the recipient's inbox (`gregor.org`)
-2. Sent via relay for real-time delivery (if connected)
-
-### Marking Messages from Claude
+### Managing the Task Queue
 
 ```bash
-# Mark a message as TODO
-python3 hooks/mark-message.py 151230 todo
+# Approve a waiting task
+python3 hooks/task-queue.py approve msg-20251212-143000-gregor
 
-# Mark as done
-python3 hooks/mark-message.py 151230 done
+# Reject a task
+python3 hooks/task-queue.py reject msg-20251212-143000-gregor
 
-# Mark as read (clear status)
-python3 hooks/mark-message.py 151230 read
+# Cancel a running task
+python3 hooks/task-queue.py cancel msg-20251212-143000-gregor
 ```
-
-The ID is shown in the hook output `[msg-id: msg-20251212-151230-tex]` - use any unique part.
-
-## How It Works
-
-### Message Flow
-
-1. You type `@gregor hello` in GUI
-2. Message saved to `~/Data/1-datafund/org/inboxes/gregor.org`
-3. Message sent via WebSocket relay (if online)
-4. Gregor's GUI shows notification instantly
-
-### @claude Routing
-
-- `@claude do this` → routes to `@yourname-claude`
-- Each user's Claude is separate
-- Whitelist controls who can message your Claude
-- Non-whitelisted users get: "Auto-reply: @tex-claude is not accepting messages from @bob"
-
-### Message Storage (org-mode)
-
-```org
-* MESSAGE [2025-12-12 Fri 14:30] :unread:
-:PROPERTIES:
-:ID: msg-20251212-143000-gregor
-:FROM: gregor
-:TO: tex
-:THREAD: thread-msg-20251212-142500-tex
-:REPLY_TO: msg-20251212-142500-tex
-:END:
-Can you review PR #24?
-```
-
-**Threading properties:**
-- `THREAD` - Thread ID (shared by all messages in conversation)
-- `REPLY_TO` - Parent message ID (direct reply target)
 
 ## Relay Server
 
-The relay enables real-time messaging between team members.
+The relay provides real-time delivery between team members. It is optional —
+the module works offline using the org-workspace store alone.
 
-**Default relay**: `wss://datacore-messaging-relay.datafund.ai/ws`
-
-### Deploy Your Own
-
-See `relay/README.md` for Docker deployment instructions.
+**Deploy your own** (see `relay/README.md`):
 
 ```bash
 cd relay/
@@ -251,34 +214,37 @@ echo "RELAY_SECRET=your-secret" > .env
 docker-compose up -d --build
 ```
 
-## Files
+Configure the URL in `settings.local.yaml` under `messaging.relay.url`.
+
+## File Layout
 
 ```
-datacore-msg.py           # Unified GUI app
+datacore-msg.py           # Unified CLI/GUI entry point
 install.sh                # Interactive installer
 settings.local.yaml       # Your settings (gitignored)
 
+lib/
+├── config.py             # Settings, trust tiers, paths
+├── message_store.py      # org-workspace message CRUD
+├── agent_inbox.py        # Agent task state machine
+├── governor.py           # Task acceptance policy
+└── relay.py              # WebSocket relay client
+
 hooks/
-├── inbox-watcher.py      # Claude Code hook
-└── send-reply.py         # Reply helper for Claude
+├── inbox-watcher.py      # Claude Code hook (prompt check)
+├── send-reply.py         # Reply helper for Claude
+├── mark-message.py       # Mark messages read/todo/done
+└── task-queue.py         # Approve/reject/cancel tasks
+
+templates/
+└── contacts.yaml         # Known actors template
 
 relay/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── datacore-msg-relay.py
 └── README.md
-
-lib/
-├── datacore-msg-relay.py # Relay server
-└── datacore-msg-window.py # Legacy GUI (PyQt6)
 ```
-
-## Requirements
-
-- Python 3.8+
-- PyQt6: `pip install PyQt6`
-- websockets: `pip install websockets`
-- pyyaml: `pip install pyyaml`
 
 ## License
 
