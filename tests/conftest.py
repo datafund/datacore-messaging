@@ -31,10 +31,10 @@ def tmp_space(tmp_path):
 
 @pytest.fixture
 def msg_state_config():
-    """StateConfig for message storage (inbox.org). DONE is terminal for messages."""
+    """StateConfig for message storage (inbox.org). ARCHIVED/CANCELLED are terminal."""
     return StateConfig(
-        active=["TODO", "WAITING"],
-        terminal=["DONE", "CANCELLED", "ARCHIVED"],
+        sequences={"messaging": ["TODO", "WAITING", "DONE", "ARCHIVED", "CANCELLED"]},
+        terminal_states=frozenset(["ARCHIVED", "CANCELLED"]),
     )
 
 
@@ -42,8 +42,8 @@ def msg_state_config():
 def task_state_config():
     """StateConfig for agent tasks. DONE is NOT terminal — allows revision cycle."""
     return StateConfig(
-        active=["TODO", "WAITING", "QUEUED", "WORKING", "DONE"],
-        terminal=["CANCELLED", "ARCHIVED"],
+        sequences={"tasks": ["TODO", "WAITING", "QUEUED", "WORKING", "DONE", "CANCELLED", "ARCHIVED"]},
+        terminal_states=frozenset(["CANCELLED", "ARCHIVED"]),
     )
 
 
