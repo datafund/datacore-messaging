@@ -99,6 +99,19 @@ class TestTaskLifecycle:
         assert node.properties["RETRY_REASON"] == "Agent crashed"
         assert int(node.properties.get("RETRY_COUNT", "0")) == 1
 
+    def test_retry_increments_count_twice(self, agent_store):
+        node = agent_store.create_task("owner@x.com", "task", "owner", ["AI"])
+        # First retry
+        agent_store.claim(node)
+        agent_store.retry(node, reason="First failure")
+        assert int(node.properties.get("RETRY_COUNT", "0")) == 1
+        assert node.todo == "QUEUED"
+        # Second retry
+        agent_store.claim(node)
+        agent_store.retry(node, reason="Second failure")
+        assert int(node.properties.get("RETRY_COUNT", "0")) == 2
+        assert node.todo == "QUEUED"
+
     def test_precondition_reject_on_queued_raises(self, agent_store):
         node = agent_store.create_task("owner@x.com", "task", "owner", ["AI"])
         assert node.todo == "QUEUED"

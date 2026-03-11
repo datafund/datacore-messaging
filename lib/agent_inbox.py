@@ -21,6 +21,7 @@ from pathlib import Path
 from org_workspace import OrgWorkspace, StateConfig, NodeView
 from org_workspace.concurrency import FileLock
 
+from lib._org_utils import _refresh_node
 from lib.config import get_trust_tier_config
 
 
@@ -41,17 +42,6 @@ def _should_auto_accept(trust_tier: str) -> bool:
 def _assert_state(node: NodeView, expected: str, method: str) -> None:
     if node.todo != expected:
         raise ValueError(f"{method}: Expected state {expected}, got {node.todo}")
-
-
-def _refresh_node(node: NodeView, ws: OrgWorkspace) -> None:
-    """Update a NodeView's slots in-place from the current workspace state."""
-    node_id = object.__getattribute__(node, "_node").properties.get("ID")
-    if node_id:
-        fresh = ws.find_by_id(node_id)
-        if fresh is not None:
-            object.__setattr__(node, "_node", fresh._node)
-            object.__setattr__(node, "_generation", fresh._generation)
-            object.__setattr__(node, "_gen_check", fresh._gen_check)
 
 
 class AgentInbox:
@@ -81,7 +71,20 @@ class AgentInbox:
             pass
 
     def _reload(self) -> None:
+        """Reload workspace from disk and refresh all tracked live nodes.
+
+        Generation contract:
+        - Write methods (create_task, approve, reject, claim, complete,
+          retry, request_revision, cancel) do NOT reload — they operate on
+          the in-memory workspace and save to disk. Returned NodeViews remain
+          valid until the next reload() call.
+        - Read methods (find_by_state, find_awaiting_approval, counts) call
+          _reload() first to reflect changes from other processes. This
+          invalidates previously held NodeViews, so _refresh_live_nodes()
+          is called to patch tracked nodes in-place.
+        """
         self._ws.reload(self._inbox_path)
+        self._refresh_live_nodes()
 
     def _refresh_live_nodes(self) -> None:
         for node in self._live_nodes:
@@ -227,6 +230,7 @@ class AgentInbox:
             "done": sum(1 for n in nodes if n.todo == "DONE"),
             "waiting": sum(1 for n in nodes if n.todo == "WAITING"),
             "cancelled": sum(1 for n in nodes if n.todo == "CANCELLED"),
+            "archived": sum(1 for n in nodes if n.todo == "ARCHIVED"),
             "total": len(nodes),
         }
 
