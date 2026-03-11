@@ -34,17 +34,17 @@ def main() -> None:
         print(f"  Done:    {counts['done']}")
         print(f"  Total:   {counts['total']}")
     elif args.action == "approve" and args.task_id:
-        node = inbox.workspace.find_by_id(args.task_id)
+        node = inbox.find_by_id(args.task_id)
         if node:
             inbox.approve(node)
             print(f"[messaging] Approved: {args.task_id}")
     elif args.action == "reject" and args.task_id:
-        node = inbox.workspace.find_by_id(args.task_id)
+        node = inbox.find_by_id(args.task_id)
         if node:
             inbox.reject(node, reason=args.reason)
             print(f"[messaging] Rejected: {args.task_id}")
     elif args.action == "cancel" and args.task_id:
-        node = inbox.workspace.find_by_id(args.task_id)
+        node = inbox.find_by_id(args.task_id)
         if node:
             inbox.cancel(node, reason=args.reason)
             print(f"[messaging] Cancelled: {args.task_id}")

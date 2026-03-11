@@ -36,7 +36,7 @@ def main() -> None:
 
     if args.complete_task:
         inbox = AgentInbox(space_root, f"{username}-claude")
-        node = inbox.workspace.find_by_id(args.complete_task)
+        node = inbox.find_by_id(args.complete_task)
         if node and node.todo == "WORKING":
             inbox.complete(node, tokens_used=args.tokens)
             print(f"[messaging] Completed task: {args.complete_task}")

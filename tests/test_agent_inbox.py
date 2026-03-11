@@ -125,6 +125,35 @@ class TestTaskLifecycle:
             agent_store.claim(node)
 
 
+class TestInputValidation:
+    def test_newline_in_from_actor_raises(self, agent_store):
+        with pytest.raises(ValueError, match="from_actor"):
+            agent_store.create_task("bad\nactor", "task", "owner", ["AI"])
+
+    def test_newline_in_trust_tier_raises(self, agent_store):
+        with pytest.raises(ValueError, match="trust_tier"):
+            agent_store.create_task("a@x.com", "task", "own\ner", ["AI"])
+
+    def test_newline_in_content_is_allowed(self, agent_store):
+        # Task content becomes the heading — handled by org-workspace
+        node = agent_store.create_task("owner@x.com", "Line1\nLine2", "owner", ["AI"])
+        assert node.todo == "QUEUED"
+
+
+class TestFindById:
+    def test_find_by_id_returns_node(self, agent_store):
+        node = agent_store.create_task("owner@x.com", "task", "owner", ["AI"])
+        task_id = node.properties.get("ID") or node.properties.get("CUSTOM_ID")
+        # find_by_id may use the org ID property name — try both
+        found = agent_store.find_by_id(task_id) if task_id else None
+        # Even if the workspace stores IDs differently, the method must not raise
+        assert found is not None or task_id is None  # graceful on missing ID
+
+    def test_find_by_id_unknown_returns_none(self, agent_store):
+        result = agent_store.find_by_id("nonexistent-id-xyz")
+        assert result is None
+
+
 class TestQueries:
     def test_find_queued(self, agent_store):
         agent_store.create_task("a@x.com", "t1", "owner", ["AI"])

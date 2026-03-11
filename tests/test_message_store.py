@@ -57,7 +57,18 @@ class TestCreateMessage:
         msg2 = store.create_message(
             from_actor="a@x.com", to_actor="b@x.com", content="same"
         )
-        # IDs may collide within same second — that's OK for tests
+        assert msg1.properties["ID"] != msg2.properties["ID"]
+
+    def test_live_node_stays_valid_after_create(self, store):
+        """msg1 remains readable and transitionable after msg2 is created."""
+        msg1 = store.create_message("a@x.com", "b@x.com", "First")
+        # Creating a second message bumps workspace generation
+        store.create_message("a@x.com", "b@x.com", "Second")
+        # msg1 must still be valid — properties readable and state transitionable
+        assert msg1.properties["FROM"] == "a@x.com"
+        assert msg1.todo == "TODO"
+        store.mark_read(msg1)
+        assert msg1.todo == "DONE"
 
 
 class TestQueryMessages:
@@ -93,6 +104,39 @@ class TestMarkOperations:
         store.mark_read(msg)
         store.archive(msg)
         assert msg.todo == "ARCHIVED"
+
+
+class TestInputValidation:
+    def test_newline_in_from_actor_raises(self, store):
+        with pytest.raises(ValueError, match="from_actor"):
+            store.create_message("bad\nactor", "b@x.com", "Hello")
+
+    def test_newline_in_to_actor_raises(self, store):
+        with pytest.raises(ValueError, match="to_actor"):
+            store.create_message("a@x.com", "bad\nactor", "Hello")
+
+    def test_newline_in_reply_to_raises(self, store):
+        with pytest.raises(ValueError, match="reply_to"):
+            store.create_message("a@x.com", "b@x.com", "Hello", reply_to="bad\nid")
+
+    def test_newline_in_extra_prop_raises(self, store):
+        with pytest.raises(ValueError, match="CUSTOM"):
+            store.create_message("a@x.com", "b@x.com", "Hello", CUSTOM="bad\nvalue")
+
+    def test_newline_in_content_is_allowed(self, store):
+        # Body text may contain newlines — only property values are restricted
+        node = store.create_message("a@x.com", "b@x.com", "Line1\nLine2")
+        assert node.todo == "TODO"
+
+    def test_newline_in_file_delivery_filename_raises(self, store):
+        with pytest.raises(ValueError, match="filename"):
+            store.create_file_delivery(
+                from_actor="a@x.com",
+                filename="bad\nfile.pdf",
+                size=100,
+                content_type="application/pdf",
+                swarm_ref="abc123",
+            )
 
 
 class TestFileDelivery:

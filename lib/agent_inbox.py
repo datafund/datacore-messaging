@@ -23,11 +23,14 @@ from org_workspace.concurrency import FileLock
 
 from lib._org_utils import _refresh_node
 from lib.config import get_trust_tier_config
+from lib.message_store import _validate_property_value
 
 
 _TODO_HEADER = "#+TODO: TODO WAITING QUEUED WORKING | DONE CANCELLED ARCHIVED\n"
 
-# CORRECT API: sequences + terminal_states
+# Sequences define the known states — they do NOT constrain transitions.
+# Edge enforcement is handled exclusively via _assert_state preconditions
+# in write methods. This allows non-linear workflows (e.g. DONE -> QUEUED).
 _TASK_STATE_CONFIG = StateConfig(
     sequences={"tasks": ["TODO", "WAITING", "QUEUED", "WORKING", "DONE", "CANCELLED", "ARCHIVED"]},
     terminal_states=frozenset(["CANCELLED", "ARCHIVED"]),
@@ -102,6 +105,14 @@ class AgentInbox:
         effort: int | None = None,
         estimated_tokens: int | None = None,
     ) -> NodeView:
+        """Create a new task entry.
+
+        Raises ValueError if from_actor or trust_tier contain newlines
+        (which would corrupt org property drawers).
+        """
+        _validate_property_value(from_actor, "from_actor")
+        _validate_property_value(trust_tier, "trust_tier")
+
         auto_accept = _should_auto_accept(trust_tier)
         state = "QUEUED" if auto_accept else "WAITING"
         now_str = datetime.now().strftime("[%Y-%m-%d %a %H:%M]")
@@ -220,6 +231,10 @@ class AgentInbox:
             if n.properties.get("AWAITING") == "owner-approval"
         ]
 
+    def find_by_id(self, task_id: str) -> NodeView | None:
+        """Find a task by its ID (in-memory, no reload)."""
+        return self._ws.find_by_id(task_id)
+
     def counts(self) -> dict[str, int]:
         self._reload()
         all_nodes = list(self._ws.all_nodes())
@@ -233,7 +248,3 @@ class AgentInbox:
             "archived": sum(1 for n in nodes if n.todo == "ARCHIVED"),
             "total": len(nodes),
         }
-
-    @property
-    def workspace(self) -> OrgWorkspace:
-        return self._ws

@@ -17,6 +17,7 @@ Generation contract:
 """
 
 import hashlib
+import itertools
 import os
 from datetime import datetime
 from pathlib import Path
@@ -29,17 +30,36 @@ from lib._org_utils import _refresh_node
 
 _TODO_HEADER = "#+TODO: TODO WAITING QUEUED WORKING | DONE CANCELLED ARCHIVED\n"
 
+# Sequences define the known states — they do NOT constrain transitions.
+# Edge enforcement is handled exclusively via _assert_state preconditions
+# in write methods. This allows non-linear workflows (e.g. DONE -> QUEUED).
 _MSG_STATE_CONFIG = StateConfig(
     sequences={"messaging": ["TODO", "WAITING", "DONE", "ARCHIVED", "CANCELLED"]},
     terminal_states=frozenset(["ARCHIVED", "CANCELLED"]),
 )
+
+# Process-local counters to ensure ID uniqueness even within the same microsecond.
+_MSG_COUNTER = itertools.count()
+_FILE_COUNTER = itertools.count()
+
+
+def _validate_property_value(value: str, name: str) -> None:
+    """Raise ValueError if value contains characters unsafe in org property drawers.
+
+    Property values are written as single-line key: value pairs.
+    Newlines would corrupt the drawer structure.
+    """
+    if "\n" in value or "\r" in value:
+        raise ValueError(
+            f"Property '{name}' must not contain newlines; got: {value!r}"
+        )
 
 
 def _unique_msg_id(from_actor: str, to_actor: str, content: str) -> str:
     """Generate a timestamp-unique message ID."""
     now = datetime.now()
     ts = now.strftime("%Y%m%d-%H%M%S")
-    raw = f"{from_actor}:{to_actor}:{content}:{now.isoformat()}"
+    raw = f"{from_actor}:{to_actor}:{content}:{now.isoformat()}:{next(_MSG_COUNTER)}"
     h = hashlib.sha256(raw.encode()).hexdigest()[:8]
     return f"msg-{ts}-{h}"
 
@@ -48,7 +68,7 @@ def _unique_file_id(from_actor: str, filename: str) -> str:
     """Generate a timestamp-unique file delivery ID."""
     now = datetime.now()
     ts = now.strftime("%Y%m%d-%H%M%S")
-    raw = f"{from_actor}:{filename}:{now.isoformat()}"
+    raw = f"{from_actor}:{filename}:{now.isoformat()}:{next(_FILE_COUNTER)}"
     h = hashlib.sha256(raw.encode()).hexdigest()[:8]
     return f"file-{ts}-{h}"
 
@@ -77,6 +97,9 @@ class MessageStore:
         self._msg_dir.mkdir(parents=True, exist_ok=True)
         self._agents_dir.mkdir(exist_ok=True)
         for p in (self._inbox_path, self._outbox_path):
+            # outbox.org is scaffolded here but not yet written to — it is
+            # reserved for Phase 2 as an outgoing message queue that buffers
+            # sent messages when the relay is offline or unavailable.
             try:
                 fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 os.write(fd, _TODO_HEADER.encode())
@@ -105,7 +128,20 @@ class MessageStore:
 
         Returns a NodeView that stays valid across subsequent create_message
         calls (tracked and refreshed when the workspace generation bumps).
+
+        Raises ValueError if from_actor, to_actor, reply_to, priority, or any
+        extra_props value contains newlines (which would corrupt org property
+        drawers). Content (body text) may contain newlines.
         """
+        _validate_property_value(from_actor, "from_actor")
+        _validate_property_value(to_actor, "to_actor")
+        if reply_to is not None:
+            _validate_property_value(reply_to, "reply_to")
+        if priority is not None:
+            _validate_property_value(priority, "priority")
+        for key, val in extra_props.items():
+            _validate_property_value(val, key)
+
         msg_id = _unique_msg_id(from_actor, to_actor, content)
         now_str = datetime.now().strftime("[%Y-%m-%d %a %H:%M]")
         heading = now_str
@@ -155,7 +191,15 @@ class MessageStore:
         """Create a file delivery notification in the inbox.
 
         Returns a NodeView valid until the next find_* call.
+
+        Raises ValueError if any property string contains newlines.
         """
+        _validate_property_value(from_actor, "from_actor")
+        _validate_property_value(filename, "filename")
+        _validate_property_value(content_type, "content_type")
+        _validate_property_value(swarm_ref, "swarm_ref")
+        _validate_property_value(fairdrop_ref, "fairdrop_ref")
+
         file_id = _unique_file_id(from_actor, filename)
         now_str = datetime.now().strftime("[%Y-%m-%d %a %H:%M]")
         heading = now_str
@@ -232,8 +276,3 @@ class MessageStore:
         with FileLock(self._inbox_path):
             self._ws.transition(node, "ARCHIVED")
             self._ws.save(self._inbox_path)
-
-    @property
-    def workspace(self) -> OrgWorkspace:
-        """Access underlying workspace (for advanced queries)."""
-        return self._ws
