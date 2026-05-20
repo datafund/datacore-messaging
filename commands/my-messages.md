@@ -25,8 +25,8 @@ Display your inbox - unread and recent messages.
    - If not set, prompt user to configure
 
 2. **Find all inbox files**
-   - Scan all spaces: `*/org/inboxes/{identity.name}.org`
-   - Include personal space if exists: `0-personal/org/inboxes/{name}.org`
+   - Scan all spaces: `*/org/messaging/inbox.org`
+   - Include personal space if exists: `0-personal/org/messaging/inbox.org`
 
 3. **Parse messages**
    - Read org-mode entries from each inbox

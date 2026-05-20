@@ -1,0 +1,8 @@
+# Known ActivityPub actors for this space
+# Add actors via trust_overrides in settings.local.yaml or manually edit this file
+actors: []
+# Example:
+#   - id: "tex@team.example.com"
+#     name: "Tex"
+#     trust_tier: team
+#     added: 2026-03-11

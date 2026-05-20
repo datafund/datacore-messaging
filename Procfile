@@ -1,1 +1,1 @@
-web: python lib/datacore-msg-relay.py
+web: python -m lib.relay --host

@@ -26,12 +26,12 @@ Add a new user to the messaging system.
    - If `--space` specified, use that space only
    - Otherwise, add to all team spaces
 
-3. **Create inbox file**
-   - Path: `[space]/org/inboxes/{username}.org`
-   - Use template from `templates/inbox.org`
+3. **Create messaging directory if needed**
+   - Path: `[space]/org/messaging/`
+   - Agent inbox: `[space]/org/messaging/agents/{username}-claude.org`
 
-4. **Update USERS.yaml**
-   - Add user entry with handles
+4. **Update contacts.yaml**
+   - Add actor entry with handles and trust tier
    - Set `added` date
 
 5. **Confirm**
@@ -39,23 +39,23 @@ Add a new user to the messaging system.
    ✓ User 'crt' added to messaging
      Spaces: datafund
      Handles: @crt, @crtahlin
-     Inbox: 1-datafund/org/inboxes/crt.org
+     Contacts: 1-datafund/contacts.yaml
    ```
 
-## USERS.yaml Format
+## contacts.yaml Format
 
 ```yaml
-users:
-  gregor:
+actors:
+  - id: "gregor@team.example.com"
+    name: "gregor"
     handles: ["@gregor", "@gz"]
+    trust_tier: owner
     added: 2025-12-11
-  crt:
+  - id: "crt@team.example.com"
+    name: "crt"
     handles: ["@crt", "@crtahlin"]
+    trust_tier: team
     added: 2025-12-11
-  claude:
-    handles: ["@claude", "@ai"]
-    added: 2025-12-11
-    type: ai
 ```
 
 ## Examples

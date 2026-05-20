@@ -24,7 +24,7 @@ Send a message to another user in a shared space.
    - If not set, prompt user to configure identity
 
 2. **Resolve recipient**
-   - Read `[space]/org/inboxes/USERS.yaml`
+   - Read `[space]/contacts.yaml`
    - Match `@recipient` against handles or usernames
    - If not found, treat as new user (create inbox)
 
@@ -34,9 +34,9 @@ Send a message to another user in a shared space.
    - Otherwise detect from current directory
    - Otherwise prompt user to specify
 
-4. **Create inbox directory if needed**
+4. **Create messaging directory if needed**
    ```
-   [space]/org/inboxes/
+   [space]/org/messaging/
    ```
 
 5. **Generate message ID**
@@ -44,18 +44,18 @@ Send a message to another user in a shared space.
    msg-{YYYYMMDD}-{HHMMSS}-{sender}
    ```
 
-6. **Append message to recipient's inbox**
-   - File: `[space]/org/inboxes/{recipient}.org`
+6. **Append message to inbox**
+   - File: `[space]/org/messaging/inbox.org`
    - Create file if doesn't exist
 
-7. **Update USERS.yaml if new user**
+7. **Update contacts.yaml if new user**
    - Add recipient to registry with handle
 
 8. **Confirm delivery**
    ```
    ✓ Message sent to @recipient
      Space: datafund
-     File: 1-datafund/org/inboxes/recipient.org
+     File: 1-datafund/org/messaging/inbox.org
 
    Run ./sync push to deliver.
    ```
